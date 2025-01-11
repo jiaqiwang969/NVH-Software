@@ -20,6 +20,135 @@ import time
 from pydub import AudioSegment  # 如果需要使用 pydub
 
 
+# view/dialogs.py
+
+class GlobalParamManagerDialog(tk.Toplevel):
+    """
+    用来查看/管理全局参数(多级键).
+    只做展示、增改删, 不影响其他逻辑.
+    """
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.controller = parent.controller  # 以便访问 self.controller.global_values
+        self.title("Global Param Manager")
+
+        # 1) 从实际数据中获取文件、通道列表
+        file_list = self._get_file_list()
+        ch_list   = self._get_channel_list()
+
+        # 2) 给GUI的下拉赋初始值；加上 "ALL_FILES" / "ALL_CHANNELS"
+        self.file_options = ["ALL_FILES"] + file_list
+        self.channel_options = ["ALL_CHANNELS"] + ch_list
+
+        # UI 组件
+        self._create_widgets()
+
+    def _get_file_list(self):
+        """根据 processing_results 获取实际文件名列表."""
+        file_list = []
+        if self.controller.processing_results:
+            for f_res in self.controller.processing_results.files:
+                fn = f_res.get('file_name')
+                if fn and fn not in file_list:
+                    file_list.append(fn)
+        return file_list
+
+    def _get_channel_list(self):
+        """根据实际的 channel_options 或者 sensor_settings 获取通道名称列表."""
+        ch_list = []
+        # 如果您在 MainWindow 更新了 self.channel_options, 那么可以:
+        ch_list = self.controller.view.channel_options
+        # 若想更严谨，可再去 f_res['fft_results'] 里收集通道名:
+        #   for f in self.controller.processing_results.files:
+        #       for entry in f['fft_results']:
+        #           ch_name = entry['fft_result'].name
+        #           if ch_name not in ch_list:
+        #               ch_list.append(ch_name)
+        return list(ch_list)
+
+    def _create_widgets(self):
+        frame_top = tk.Frame(self)
+        frame_top.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+        # FileKey
+        tk.Label(frame_top, text="FileKey:").grid(row=0, column=0, sticky=tk.E)
+        self.file_var = tk.StringVar(value="ALL_FILES")
+        self.file_combo = ttk.Combobox(frame_top, textvariable=self.file_var,
+                     values=self.file_options, width=12)
+        self.file_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+
+        # ChannelKey
+        tk.Label(frame_top, text="ChannelKey:").grid(row=0, column=2, sticky=tk.E)
+        self.ch_var = tk.StringVar(value="ALL_CHANNELS")
+        self.ch_combo = ttk.Combobox(frame_top, textvariable=self.ch_var,
+                     values=self.channel_options, width=12)
+        self.ch_combo.grid(row=0, column=3, sticky=tk.W, padx=5, pady=2)
+
+        # ParamKey
+        tk.Label(frame_top, text="ParamKey:").grid(row=1, column=0, sticky=tk.E)
+        self.param_key_var = tk.StringVar(value="freq_to_remove")
+        tk.Entry(frame_top, textvariable=self.param_key_var, width=15
+        ).grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
+
+        # ParamValue
+        tk.Label(frame_top, text="ParamValue:").grid(row=1, column=2, sticky=tk.E)
+        self.param_val_var = tk.StringVar(value="50,120")
+        tk.Entry(frame_top, textvariable=self.param_val_var, width=15
+        ).grid(row=1, column=3, sticky=tk.W, padx=5, pady=2)
+
+        btn_frame = tk.Frame(frame_top)
+        btn_frame.grid(row=0, column=4, rowspan=2, padx=10)
+
+        tk.Button(btn_frame, text="Set", command=self.on_set).pack(pady=5)
+        tk.Button(btn_frame, text="Get", command=self.on_get).pack(pady=5)
+        tk.Button(btn_frame, text="ListAll", command=self.on_list_all).pack(pady=5)
+
+        # 下方文本区
+        self.text_box = scrolledtext.ScrolledText(self, width=70, height=10)
+        self.text_box.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    def on_set(self):
+        fkey = self.file_var.get()
+        ckey = self.ch_var.get()
+        pkey = self.param_key_var.get().strip()
+        val_str = self.param_val_var.get().strip()
+
+        # 简单解析
+        final_val = val_str
+        if "," in val_str:
+            try:
+                final_val = [float(x) for x in val_str.split(",")]
+            except:
+                pass
+        else:
+            try:
+                final_val = float(val_str)
+            except:
+                pass
+
+        # 调用 global_values.set_value(...)
+        self.controller.global_values.set_value(fkey, ckey, pkey, final_val)
+        self._append_text(f"Set => ({fkey}, {ckey}, {pkey}) = {final_val}")
+
+    def on_get(self):
+        fkey = self.file_var.get()
+        ckey = self.ch_var.get()
+        pkey = self.param_key_var.get().strip()
+
+        val = self.controller.global_values.get_value_exact(fkey, ckey, pkey, default="(None)")
+        self._append_text(f"Get => ({fkey}, {ckey}, {pkey}) => {val}")
+
+    def on_list_all(self):
+        lines = self.controller.global_values.list_all_params()
+        self._append_text("=== List All ===")
+        for line in lines:
+            self._append_text("  " + line)
+        self._append_text("=== End ===")
+
+    def _append_text(self, msg):
+        self.text_box.insert(tk.END, msg + "\n")
+        self.text_box.see(tk.END)
+
 class UserDefineDialog(tk.Toplevel):
     """
     左侧：用户自定义信号(通道选择 + code_text + 导入/导出脚本 + 频谱/时域分析按钮 + “确定”按钮)

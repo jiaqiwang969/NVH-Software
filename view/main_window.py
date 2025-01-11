@@ -107,6 +107,10 @@ class MainWindow(tk.Tk):
         self.frf_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.frf_tab, text='频响函数')
         self.create_frf_widgets()
+        # Global Params 选项卡
+        self.global_params_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.global_params_tab, text="Global Params")
+        self.create_global_params_widgets()
         # 默认禁用可视化选项卡
         self.disable_visualization_tabs()
 
@@ -662,6 +666,175 @@ class MainWindow(tk.Tk):
             self.notebook.tab(3, state='normal')  # 频响函数
         else:
             self.notebook.tab(3, state='disabled')
+
+    def create_global_params_widgets(self):
+        """
+        在 "Global Params" 选项卡中添加简单UI，用于查看/修改 self.controller.global_values。
+        动态获取已处理的文件列表和通道列表，供用户选择。
+        """
+        frame = self.global_params_tab
+
+        # =========== 动态获取文件/通道列表 ===========
+        file_list = self._get_file_list()
+        ch_list   = self._get_channel_list()
+
+        # 在列表前面插入一个 "ALL_FILES"/"ALL_CHANNELS" 选项，代表“全局”或“不区分通道”
+        file_options = ["ALL_FILES"] + file_list
+        channel_options = ["ALL_CHANNELS"] + ch_list
+
+        # =========== GUI布局 ===========
+        tk.Label(frame, text="FileKey:").grid(row=0, column=0, sticky=tk.E, padx=5, pady=5)
+        self.gp_file_var = tk.StringVar(value="ALL_FILES")
+        self.gp_file_combo = ttk.Combobox(
+            frame, textvariable=self.gp_file_var, values=file_options, width=12
+        )
+        self.gp_file_combo.grid(row=0, column=1, sticky=tk.W, padx=5)
+
+        tk.Label(frame, text="ChannelKey:").grid(row=0, column=2, sticky=tk.E, padx=5)
+        self.gp_ch_var = tk.StringVar(value="ALL_CHANNELS")
+        self.gp_ch_combo = ttk.Combobox(
+            frame, textvariable=self.gp_ch_var, values=channel_options, width=12
+        )
+        self.gp_ch_combo.grid(row=0, column=3, sticky=tk.W, padx=5)
+
+        tk.Label(frame, text="ParamKey:").grid(row=1, column=0, sticky=tk.E, padx=5, pady=5)
+        self.gp_param_key = tk.StringVar(value="freq_to_remove")
+        tk.Entry(frame, textvariable=self.gp_param_key, width=18).grid(row=1, column=1, sticky=tk.W, padx=5)
+
+        tk.Label(frame, text="ParamValue:").grid(row=1, column=2, sticky=tk.E, padx=5)
+        self.gp_param_val = tk.StringVar(value="50,120")
+        tk.Entry(frame, textvariable=self.gp_param_val, width=18).grid(row=1, column=3, sticky=tk.W, padx=5)
+
+        # 按钮区
+        btn_frame = tk.Frame(frame)
+        btn_frame.grid(row=0, column=4, rowspan=2, padx=15)
+        tk.Button(btn_frame, text="Set Param", command=self.on_set_global_param).pack(pady=5)
+        tk.Button(btn_frame, text="Get Param", command=self.on_get_global_param).pack(pady=5)
+        tk.Button(btn_frame, text="List All", command=self.on_list_all_global_params).pack(pady=5)
+
+        # 下方文本区
+        self.global_params_text = scrolledtext.ScrolledText(frame, width=70, height=10)
+        self.global_params_text.grid(row=2, column=0, columnspan=5, padx=5, pady=5)
+
+
+    def refresh_global_params_tab(self):
+        """
+        当文件处理完成、通道更新后，主动调用此方法，
+        以更新“Global Params” Tab 上的文件下拉框、通道下拉框，避免重启软件。
+        """
+        # 假设您有类似于 _get_file_list(), _get_channel_list() 两个内部方法:
+        file_list = self._get_file_list()
+        ch_list = self._get_channel_list()
+
+        file_options = ["ALL_FILES"] + file_list
+        channel_options = ["ALL_CHANNELS"] + ch_list
+
+        # 更新 ComboBox:
+        # 1) File:
+        self.gp_file_combo.configure(values=file_options)
+        # 如果您愿意可以重设 self.gp_file_var.set(...) 为某个默认值
+        if file_options:
+            self.gp_file_var.set(file_options[0])
+        else:
+            self.gp_file_var.set("ALL_FILES")
+
+        # 2) Channel:
+        self.gp_ch_combo.configure(values=channel_options)
+        if channel_options:
+            self.gp_ch_var.set(channel_options[0])
+        else:
+            self.gp_ch_var.set("ALL_CHANNELS")
+
+
+
+
+    def _get_file_list(self):
+        """
+        从实际处理结果中收集“文件名”列表，若无 processing_results 或未处理，则返回空列表。
+        """
+        file_list = []
+        if self.controller.processing_results:
+            for f_res in self.controller.processing_results.files:
+                fn = f_res.get('file_name')
+                if fn and fn not in file_list:
+                    file_list.append(fn)
+        return file_list
+
+    def _get_channel_list(self):
+        """
+        从实际的 channel_options 或者 processing_results 收集通道名称。
+        这里演示取 self.controller.view.channel_options，您也可遍历 fft_results 里 channel_name。
+        """
+        ch_list = list(self.controller.channel_options)  # 若 channel_options 是个 set/list
+        return ch_list
+
+
+    def on_set_global_param(self):
+        """
+        将 ParamValue 写入 self.controller.global_values
+        """
+        if not hasattr(self.controller, "global_values"):
+            messagebox.showwarning("警告", "controller.global_values 不存在！")
+            return
+
+        fkey = self.gp_file_var.get()
+        ckey = self.gp_ch_var.get()
+        pkey = self.gp_param_key.get().strip()
+        val_str = self.gp_param_val.get().strip()
+
+        # 简单解析
+        final_val = val_str
+        if "," in val_str:
+            try:
+                final_val = [float(x.strip()) for x in val_str.split(",")]
+            except:
+                pass
+        else:
+            try:
+                final_val = float(val_str)
+            except:
+                pass
+
+        # 写入 global_values
+        self.controller.global_values.set_value(fkey, ckey, pkey, final_val)
+        self._log_global_params(f"[Set Param] => ({fkey}, {ckey}, {pkey}) = {final_val}")
+
+
+    def on_get_global_param(self):
+        """
+        从 self.controller.global_values 读取 exact匹配 (fkey, ckey, pkey)
+        """
+        if not hasattr(self.controller, "global_values"):
+            messagebox.showwarning("警告", "controller.global_values 不存在！")
+            return
+
+        fkey = self.gp_file_var.get()
+        ckey = self.gp_ch_var.get()
+        pkey = self.gp_param_key.get().strip()
+
+        val = self.controller.global_values.get_value_exact(fkey, ckey, pkey, default="(None)")
+        self._log_global_params(f"[Get Param] => ({fkey}, {ckey}, {pkey}) => {val}")
+
+
+    def on_list_all_global_params(self):
+        """
+        列出目前 global_values 里所有条目
+        """
+        if not hasattr(self.controller, "global_values"):
+            messagebox.showwarning("警告", "controller.global_values 不存在！")
+            return
+
+        lines = self.controller.global_values.list_all_params()
+        self._log_global_params("=== List All ===")
+        for line in lines:
+            self._log_global_params("  " + line)
+        self._log_global_params("=== End ===")
+
+
+    def _log_global_params(self, msg):
+        self.global_params_text.insert(tk.END, msg + "\n")
+        self.global_params_text.see(tk.END)
+
 
 
 

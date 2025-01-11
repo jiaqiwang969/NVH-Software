@@ -14,6 +14,33 @@ from processor.fft_processor import FFTProcessor
 from view.main_window import MainWindow
 from view.dialogs import SensorSettingsDialog
 
+
+class GlobalValues:
+    """
+    用字典存储 (file_key, channel_key, param_key) => value
+    可以代表全局/文件/通道三级配置，也可扩展更多维度。
+    """
+    def __init__(self):
+        self._values = {}
+
+    def set_value(self, fkey: str, ckey: str, pkey: str, value):
+        self._values[(fkey, ckey, pkey)] = value
+
+    def get_value_exact(self, fkey: str, ckey: str, pkey: str, default=None):
+        return self._values.get((fkey, ckey, pkey), default)
+
+    def delete_value(self, fkey: str, ckey: str, pkey: str) -> bool:
+        if (fkey, ckey, pkey) in self._values:
+            del self._values[(fkey, ckey, pkey)]
+            return True
+        return False
+
+    def list_all_params(self):
+        lines = []
+        for (f, c, p), v in self._values.items():
+            lines.append(f"({f}, {c}, {p}) => {v}")
+        return sorted(lines)
+
 class AppController:
     """
     AppController 负责主逻辑、管理数据处理和结果存储，
@@ -22,12 +49,18 @@ class AppController:
 
     def __init__(self):
         # 创建主窗口（View），并将 self 作为 controller 传入
-        self.view = MainWindow(controller=self)
 
+        self.channel_options = []
         # 处理结果 / 参数
         self.processing_results = None
         self.sensor_settings = None
         self.params = None
+
+        # 2) 新增: 全局参数管理器 (多级键)
+        self.global_values = GlobalValues()  # 全局/文件/通道 配置都保存在这里
+        
+        self.view = MainWindow(controller=self)
+
 
     def run(self):
         """启动主事件循环"""
@@ -82,9 +115,32 @@ class AppController:
     def processing_finished(self, results):
         """Processor 处理完回调此方法，更新 View。"""
         self.processing_results = results
+
+        # === (1) 收集新的通道并存入 self.channel_options ===
+        self.channel_options = self._collect_channels_from_results(results)
+
+        # === (2) 原有逻辑：启用可视化Tab、更新视图、启用UserDefine按钮、刷新Global Params 等 ===
         self.view.enable_visualization_tabs()
         self.view.update_visualization_options(results)
         self.view.enable_user_define_button(True)
+        self.view.refresh_global_params_tab()
+
+
+    def _collect_channels_from_results(self, results):
+        """
+        遍历 results.files[*]['fft_results'][*]['fft_result'].name 以收集所有通道名称。
+        返回一个“去重后的”列表或集合。
+        """
+        all_channels = set()
+        if results and hasattr(results, 'files'):
+            for f_res in results.files:
+                fft_list = f_res.get('fft_results', [])
+                for fft_entry in fft_list:
+                    ch_name = fft_entry['fft_result'].name
+                    if ch_name:
+                        all_channels.add(ch_name)
+        return sorted(all_channels)
+
 
     def get_num_channels(self, input_folder, filename_prefix):
         """尝试读取首个符合前缀的TXT文件，以确定通道数。"""
@@ -244,12 +300,16 @@ class AppController:
 
         # 逐文件执行脚本
         from processor.fft_processor import FFTProcessor
+
         for f_res in self.processing_results.files:
             file_name = f_res['file_name']
             channel_data_map = all_files_data_map[file_name]
 
             local_dict = {}
             global_dict = {"np": np, "math": math}
+            if hasattr(self, "global_values"):
+                global_dict["global_values"] = self.global_values
+
             t = np.linspace(0, min_length/fs, min_length, endpoint=False)
             local_dict["t"] = t
 
@@ -310,6 +370,10 @@ class AppController:
                 f_res['frf_results'].append(user_frf_result)
 
         self.view.update_visualization_options(self.processing_results)
+
+        self.channel_options = self._collect_channels_from_results(self.processing_results)
+        self.view.refresh_global_params_tab()
+
         finish_msg = f"自定义信号 '{custom_name}' 已生成。"
         self.log_message("[完成]" + finish_msg + "\n")
         messagebox.showinfo("提示", finish_msg)
