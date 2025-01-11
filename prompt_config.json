@@ -1,0 +1,679 @@
+{
+  "system_prompt": "你是NVH软件的AI助理，负责为“用户自定义信号”功能生成可执行的Python脚本。\n用户在对话框中多选了若干通道（如 ch0, ch1, ch2...）以及时间向量 t。\n需求：\n1) 代码仅包含和信号合成/计算/特征提取相关的逻辑，必须是纯Python。\n2) 请务必将最终结果保存为 `result` 变量 (numpy数组)，它的长度须与输入通道相同。\n3) 不要执行任何危险或不可预期的操作（如文件读写、网络请求、import os后删除文件等）。\n4) 你可以使用 `import numpy as np` 和/或 `import scipy`（如需高级信号处理与优化），但不要 import 其他第三方库。\n5) 用户可能希望做各种合成/分析：\n- 通道之间加减乘除；\n- 乘以正弦或余弦波 (如转动坐标系到静态坐标系转换)；\n- 从电涡流传感器中提取阶跃来估计转速；\n- 用 scipy.signal.detrend(...) 去除趋势；\n- 使用滚动均值或其他自定义滤波 (需保证 result 与 ch0 同维度)；\n- 力环信号相对坐标系 → 绝对坐标系；\n- 根据方波高低电平(0/1或-1/+1)检测状态；\n- 包络提取；\n- theta 优化(求使得振动最小/最大)后再合成新的通道；\n- 多通道相关性、对齐、拟合 (scipy.optimize)；\n- 其他需要合成的自定义处理。\n6) 任何情况下，`result.shape` 必须与某个输入通道相同(如 ch0.shape)。如需输出一个标量或数组长度不匹配，请改用逐点/窗口化方式以保证维度对齐。\n7) 输出仅返回可用Python代码字符串，不包含额外说明或解释。\n8) 如果用户需求中包含 chX, t, 或 theta 等变量，则务必在脚本中正确引用；\n代码结尾须有 `result = ...` 赋值。\n9) 不要包含任何与安全无关的操作(如写文件、执行shell命令等)。\n10) 注意直接输出裸代码结果，不要标注```python。",
+  "examples": [
+    {
+      "example_id": 1,
+      "description": "将 ch0 与 ch1 相加合成为一个新通道",
+      "sample_prompt": "请把 ch0 和 ch1 相加，输出 result",
+      "possible_output": [
+        "import numpy as np",
+        "result = ch0 + ch1"
+      ]
+    },
+    {
+      "example_id": 2,
+      "description": "从转速传感器中提取实时转速 ",
+      "sample_prompt": "根据 ch0 的阶跃(0-5V的方波信号)，提取每圈阶跃时间点，以估计实时转速 ",
+      "possible_output": [
+        "import numpy as np",
+        "",
+        "# 输入信号: ch0",
+        "fs = 25600  # 假设采样率",
+        "deg_per_edge = 3.0",
+        "",
+        "# 信号二值化",
+        "binary_signal = np.where(ch0 > 2.5, 1, 0)",
+        "",
+        "# 检测跳变点",
+        "edges = np.diff(binary_signal)",
+        "rising_edges = np.where(edges == 1)[0] + 1  # 上升沿索引",
+        "falling_edges = np.where(edges == -1)[0] + 1  # 下降沿索引",
+        "all_edges = np.sort(np.concatenate((rising_edges, falling_edges)))",
+        "",
+        "# 计算时间间隔和瞬时转速",
+        "speed_array = np.zeros(len(ch0))",
+        "for i in range(len(all_edges) - 1):",
+        "    t1 = all_edges[i]",
+        "    t2 = all_edges[i + 1]",
+        "    time_interval = (t2 - t1) / fs  # 时间间隔（秒）",
+        "    if time_interval > 0:",
+        "        speed = (deg_per_edge / 360.0) / time_interval  # 转/秒",
+        "        speed_array[t1:t2] = speed",
+        "",
+        "# 处理信号开头和结尾部分",
+        "if len(all_edges) > 0:",
+        "    speed_array[:all_edges[0]] = speed_array[all_edges[0]]",
+        "    speed_array[all_edges[-1]:] = speed_array[all_edges[-1] - 1]",
+        "",
+        "# 输出结果",
+        "result = speed_array  # 转换为 RPM"
+      ]
+    },
+    {
+      "example_id": 3,
+      "description": "力环相对→绝对坐标: Fx0 = ch0*cos(...) + ch1*sin(...)",
+      "sample_prompt": "ch0, ch1 分别代表相对坐标下的 Fx, Fy, 现转到静态坐标系(示例 8.3Hz)",
+      "possible_output": [
+        "import numpy as np",
+        "Fx0 = ch0*np.cos(2*np.pi*8.3*t) + ch1*np.sin(2*np.pi*8.3*t)",
+        "result = Fx0"
+      ]
+    },
+    {
+      "example_id": 4,
+      "description": "力环相对→绝对坐标: Fy0 = -ch0*sin(...) + ch1*cos(...)",
+      "sample_prompt": "与上例类似，只是换算 Fy0",
+      "possible_output": [
+        "import numpy as np",
+        "Fy0 = -ch0*np.sin(2*np.pi*8.3*t) + ch1*np.cos(2*np.pi*8.3*t)",
+        "result = Fy0"
+      ]
+    },
+    {
+      "example_id": 5,
+      "description": "用 scipy.signal.detrend(...) 去除趋势项",
+      "sample_prompt": "对 ch0 做线性 detrend",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as signal",
+        "result = signal.detrend(ch0, type='linear')"
+      ]
+    },
+    {
+      "example_id": 6,
+      "description": "从转速方波信号(-1到+1或0到1)得到实时转速",
+      "sample_prompt": "每次从 -1->+1 记作一次转动，计算随时间的 RPM",
+      "possible_output": [
+        "import numpy as np",
+        "fs=25600",
+        "ups = (ch0[1:]>0.5)&(ch0[:-1]<=0.5)",
+        "cum = np.cumsum(ups)",
+        "result = np.zeros_like(ch0)",
+        "for i in range(1,len(ch0)):",
+        "    rpm = (cum[i])/(i/fs)*60",
+        "    result[i] = rpm"
+      ]
+    },
+    {
+      "example_id": 7,
+      "description": "用 scipy.signal.lfilter 做简单滤波",
+      "sample_prompt": "对 ch0 做一个 3点均值滤波",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as sig",
+        "b=[1/3,1/3,1/3]",
+        "a=[1]",
+        "result = sig.lfilter(b,a,ch0)"
+      ]
+    },
+    {
+      "example_id": 8,
+      "description": "识别限位: 若 ch0 >0.8 =>1, ch0<-0.8 =>-1, 否则=0",
+      "sample_prompt": "ch0>0.8 =>1, ch0<-0.8 =>-1, 其余=0",
+      "possible_output": [
+        "import numpy as np",
+        "result = np.zeros_like(ch0)",
+        "result[ch0>0.8] = 1",
+        "result[ch0<-0.8] = -1"
+      ]
+    },
+    {
+      "example_id": 9,
+      "description": "从原信号提取包络: 绝对值 + 滑动平均",
+      "sample_prompt": "ch0取绝对值后做窗口=10的滑动均值",
+      "possible_output": [
+        "import numpy as np",
+        "N=10",
+        "abs_data = np.abs(ch0)",
+        "cum = np.cumsum(np.insert(abs_data, 0, 0))",
+        "ma = (cum[N:] - cum[:-N])/N",
+        "result = np.concatenate([abs_data[:N-1], ma])"
+      ]
+    },
+    {
+      "example_id": 10,
+      "description": "theta 优化: 在 (ch0,ch1) + t 中扫 theta 使某频率振动最小",
+      "sample_prompt": "signal= -ch0*sin(2*pi*8.3*t + th)+ch1*cos(2*pi*8.3*t +th)，遍历0~2pi找最小幅值",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.optimize as opt",
+        "",
+        "# 定义目标函数",
+        "def objective(th):",
+        "    sig = -ch0*np.sin(2*np.pi*8.3*t + th) + ch1*np.cos(2*np.pi*8.3*t + th)",
+        "    return np.max(np.abs(sig))",
+        "",
+        "# 使用优化器寻找最优theta",
+        "res = opt.minimize_scalar(objective, bounds=(0, 2*np.pi), method='bounded')",
+        "best_th = res.x",
+        "",
+        "# 生成最终结果",
+        "result = -ch0*np.sin(2*np.pi*8.3*t + best_th) + ch1*np.cos(2*np.pi*8.3*t + best_th)"
+      ]
+    },
+    {
+      "example_id": 11,
+      "description": "机械故障诊断：计算时域指标 (峰值因子Kp、波形因子Ku、峭度因子Kt、偏度因子Ks、脉冲因子Ki)",
+      "sample_prompt": "对 ch0 计算各指标，然后把它们打包成同长度数组(全填相同值)",
+      "possible_output": [
+        "import numpy as np",
+        "sig = ch0",
+        "N = len(sig)",
+        "mean_val = np.mean(sig)",
+        "rms_val = np.sqrt(np.mean(sig**2))",
+        "peak_val = np.max(np.abs(sig))",
+        "abs_mean = np.mean(np.abs(sig))",
+        "# 峭度 Kt = (1/N)*sum(x^4)/(rms^4)",
+        "kurt = np.mean((sig-mean_val)**2)**2/(rms_val**4)",
+        "# 偏度 Ks = sum((x-mean)^3)/(N * std^3) => 这里略简化",
+        "skew = np.mean((sig-mean_val)**3)/(np.std(sig)**3 + 1e-12)",
+        "# 峰值因子 Kp = peak / rms",
+        "kp = peak_val/(rms_val+1e-12)",
+        "# 波形因子 Ku = rms / (mean(|x|)+1e-12)",
+        "ku = rms_val/(abs_mean+1e-12)",
+        "# 脉冲因子 Ki = peak / (abs_mean+1e-12)",
+        "ki = peak_val/(abs_mean+1e-12)",
+        "# 把它们打包为常量数组(长度与 ch0 一致)",
+        "metrics = np.array([kp, ku, kurt, skew, ki], dtype=sig.dtype)",
+        "result = np.full_like(sig, kp)  # 示例中仅填充 kp，可根据需要调整"
+      ]
+    },
+    {
+      "example_id": 12,
+      "description": "(演示) 二值化: 大于某阈值 =>1 否则=0",
+      "sample_prompt": "ch0>0.2 =>1 else=0",
+      "possible_output": [
+        "import numpy as np",
+        "result = np.where(ch0>0.2,1,0)"
+      ]
+    },
+    {
+      "example_id": 13,
+      "description": "使用 scipy.optimize 最小化 ch0 与 ch1 的差 (简单示例)",
+      "sample_prompt": "调整 alpha, 使得 (ch0 - alpha*ch1) 均方误差最小",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.optimize as opt",
+        "",
+        "def mse(a):",
+        "    return np.mean((ch0 - a*ch1)**2)",
+        "res = opt.minimize_scalar(mse, bounds=(0,10), method='bounded')",
+        "alpha = res.x",
+        "result = ch0 - alpha*ch1"
+      ]
+    },
+    {
+      "example_id": 14,
+      "description": "多信号相关性：计算 ch0, ch1 的 Pearson 相关系数并放到 result(常量数组)",
+      "sample_prompt": "计算 corr = Corr(ch0, ch1)，再把 result 全部填成 corr",
+      "possible_output": [
+        "import numpy as np",
+        "ch0_mean = np.mean(ch0)",
+        "ch1_mean = np.mean(ch1)",
+        "num = np.sum((ch0-ch0_mean)*(ch1-ch1_mean))",
+        "den = np.sqrt(np.sum((ch0-ch0_mean)**2)*np.sum((ch1-ch1_mean)**2))",
+        "corr = num/den",
+        "result = np.full_like(ch0, corr)"
+      ]
+    },
+    {
+      "example_id": 15,
+      "description": "对 ch0 做自相关 (simple) 并保持同长度 (对齐)",
+      "sample_prompt": "acorr = np.correlate(ch0, ch0, 'same')",
+      "possible_output": [
+        "import numpy as np",
+        "acorr = np.correlate(ch0, ch0, mode='same')",
+        "result = acorr"
+      ]
+    },
+    {
+      "example_id": 16,
+      "description": "对齐 ch0, ch1: 找最大互相关的延迟，然后把 ch1 滑动对齐",
+      "sample_prompt": "在时域中 cross-correlation",
+      "possible_output": [
+        "import numpy as np",
+        "cc = np.correlate(ch0, ch1, mode='full')",
+        "shift = np.argmax(cc) - (len(ch1)-1)",
+        "result = np.zeros_like(ch0)",
+        "if shift >= 0:",
+        "    result[shift:] = ch1[:len(ch1)-shift]",
+        "else:",
+        "    shift_abs = abs(shift)",
+        "    result[:len(ch1)-shift_abs] = ch1[shift_abs:]"
+      ]
+    },
+    {
+      "example_id": 17,
+      "description": "多项式拟合: 用 ch0 的 index 做自变量, 拟合2阶poly，再回到 result",
+      "sample_prompt": "ch0 vs index，polyfit(2)",
+      "possible_output": [
+        "import numpy as np",
+        "x = np.arange(len(ch0))",
+        "p = np.polyfit(x, ch0, 2)",
+        "fit = np.polyval(p, x)",
+        "result = fit"
+      ]
+    },
+    {
+      "example_id": 18,
+      "description": "(演示) 用 logistic 函数包裹 ch0: 1/(1+exp(-x))",
+      "sample_prompt": "对 ch0 做 logistic",
+      "possible_output": [
+        "import numpy as np",
+        "result = 1/(1+np.exp(-ch0))"
+      ]
+    },
+    {
+      "example_id": 19,
+      "description": "(演示) 对 ch0 做分段线性: 小于0变0，大于1变1，中间不变",
+      "sample_prompt": "clip(ch0,0,1)",
+      "possible_output": [
+        "import numpy as np",
+        "result = np.clip(ch0,0,1)"
+      ]
+    },
+    {
+      "example_id": 20,
+      "description": "对 ch0 做简易带通: 先做FFT, 然后衰减高低频",
+      "sample_prompt": "保留10~500Hz",
+      "possible_output": [
+        "import numpy as np",
+        "from scipy.fft import fft, ifft, fftfreq",
+        "fs=25600",
+        "N=len(ch0)",
+        "freq=fftfreq(N,1/fs)",
+        "Y=fft(ch0)",
+        "mask=(freq>10)&(freq<500)&(freq>=0)",
+        "Y[~mask]=0",
+        "filtered=ifft(Y)",
+        "result = filtered.real"
+      ]
+    },
+    {
+      "example_id": 21,
+      "description": "机械故障监测诊断: PartialCorr(ch0,ch1|ch2)",
+      "sample_prompt": "PartialCorr(ch0,ch1|ch2)",
+      "possible_output": [
+        "import numpy as np",
+        "# 简化示例: reg ch0,ch2 => residual; corr w/ ch1",
+        "x=ch0 - np.mean(ch0)",
+        "z=ch2 - np.mean(ch2)",
+        "y=ch1 - np.mean(ch1)",
+        "# OLS系数",
+        "alpha = np.sum(x*z)/np.sum(z*z)",
+        "resid_x = x - alpha*z",
+        "alpha2 = np.sum(y*z)/np.sum(z*z)",
+        "resid_y = y - alpha2*z",
+        "numer = np.sum(resid_x*resid_y)",
+        "den = np.sqrt(np.sum(resid_x**2)*np.sum(resid_y**2))",
+        "pcorr = numer/den",
+        "result = np.full_like(ch0, pcorr)"
+      ]
+    },
+    {
+      "example_id": 22,
+      "description": "(演示) 用 scipy.optimize.curve_fit 对 ch0 做指数衰减拟合",
+      "sample_prompt": "ch0 ~ A * exp(-b*t) + C",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.optimize as opt",
+        "",
+        "def expo(t,A,b,C):",
+        "    return A*np.exp(-b*t)+C",
+        "xdata = t",
+        "ydata = ch0",
+        "p0 = (1,1,0)",
+        "coef, _, _, _ = opt.curve_fit(expo, xdata, ydata, p0=p0)",
+        "A,b,C = coef",
+        "model = expo(t,A,b,C)",
+        "result = model"
+      ]
+    },
+    {
+      "example_id": 23,
+      "description": "(示例) 同时优化 ch0,ch1 使 sum((ch0-f(t))^2+(ch1-g(t))^2) 最小",
+      "sample_prompt": "f(t)=A*sin(wt+phi), g(t)=A*cos(wt+phi), 用 curve_fit",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.optimize as opt",
+        "",
+        "def combo(t,A,w,phi):",
+        "    # ch0 ~ A*sin(wt+phi)",
+        "    # ch1 ~ A*cos(wt+phi)",
+        "    # 这里返回拼接",
+        "    return np.concatenate((A*np.sin(w*t+phi), A*np.cos(w*t+phi)))",
+        "xdata = np.concatenate((t,t))",
+        "ydata = np.concatenate((ch0,ch1))",
+        "p0=[1,2*np.pi*8.3,0]",
+        "popt, pcov = opt.curve_fit(combo, xdata, ydata, p0=p0)",
+        "A,w,phi = popt",
+        "# 只返回对 ch0 的拟合(与 ch1 同长度), 也可拼接",
+        "result = A*np.sin(w*t+phi)"
+      ]
+    },
+    {
+      "example_id": 24,
+      "description": "多信号叠加后再做极值搜索: ch0+ch1+ch2 => find max",
+      "sample_prompt": "result= max(|ch0|, |ch1|, |ch2|) (逐点比较)",
+      "possible_output": [
+        "import numpy as np",
+        "result = np.maximum(np.maximum(np.abs(ch0), np.abs(ch1)), np.abs(ch2))"
+      ]
+    },
+    {
+      "example_id": 25,
+      "description": "对 ch0 做 Savitzky-Golay 样条 (简化) 滑动估计",
+      "sample_prompt": "近似替代 sg滤波: 3点多项式平滑",
+      "possible_output": [
+        "import numpy as np",
+        "win=3",
+        "N=len(ch0)",
+        "result = np.zeros_like(ch0)",
+        "for i in range(N):",
+        "    left = max(0,i-win//2)",
+        "    right= min(N,i+win//2+1)",
+        "    seg = ch0[left:right]",
+        "    x = np.arange(len(seg))",
+        "    p = np.polyfit(x,seg,2)",
+        "    result[i] = np.polyval(p,(len(seg)-1)/2)"
+      ]
+    },
+    {
+      "example_id": 26,
+      "description": "对 ch0,ch1 做滞回环分析: 以 ch0 为x, ch1为y, 计算 area",
+      "sample_prompt": "滞回环 area, 并复制成 result",
+      "possible_output": [
+        "import numpy as np",
+        "# trapezoid area: integrate x vs y over each step",
+        "area=0",
+        "for i in range(len(ch0)-1):",
+        "    dx=ch0[i+1]-ch0[i]",
+        "    avgY=(ch1[i+1]+ch1[i])/2",
+        "    area += dx*avgY",
+        "result = np.full_like(ch0, area)"
+      ]
+    },
+    {
+      "example_id": 27,
+      "description": "(演示) 同步叠加: 以 ch2 作为周期索引，对 ch0 周期性叠加做平均",
+      "sample_prompt": "ch2为每周期起点, 对ch0做多段平均",
+      "possible_output": [
+        "import numpy as np",
+        "pulse_idx = np.where(ch2>0.9)[0]  # 触发点",
+        "segments=[]",
+        "start=0",
+        "for idx in pulse_idx:",
+        "    seg = ch0[start:idx]",
+        "    segments.append(seg)",
+        "    start=idx",
+        "max_len = max(len(s) for s in segments)",
+        "stack=np.zeros((len(segments),max_len))",
+        "for i,s in enumerate(segments):",
+        "    stack[i,:len(s)] = s",
+        "mean_seg = np.mean(stack,axis=0)",
+        "result = np.zeros_like(ch0)",
+        "result[:max_len] = mean_seg[:len(ch0[:max_len])]"
+      ]
+    },
+    {
+      "example_id": 28,
+      "description": "(演示) Hilbert变换 取瞬时相位(简化)",
+      "sample_prompt": "ch0=>hilbert=>phase",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as ss",
+        "hilb = ss.hilbert(ch0)",
+        "phase = np.angle(hilb)",
+        "result = phase"
+      ]
+    },
+    {
+      "example_id": 29,
+      "description": "(示例) ch0 与 ch1 做幅值比较, 取较大者",
+      "sample_prompt": "result= max(|ch0|, |ch1|) (逐点比较)",
+      "possible_output": [
+        "import numpy as np",
+        "abs0 = np.abs(ch0)",
+        "abs1 = np.abs(ch1)",
+        "result = np.where(abs0>abs1, abs0, abs1)"
+      ]
+    },
+    {
+      "example_id": 30,
+      "description": "(演示) 多通道回归: ch0,ch1 => predict ch2, 用最小二乘",
+      "sample_prompt": "ch2 ~ a*ch0 + b*ch1 + c",
+      "possible_output": [
+        "import numpy as np",
+        "X = np.column_stack((ch0, ch1, np.ones_like(ch0)))",
+        "Y = ch2",
+        "coef, _, _, _ = np.linalg.lstsq(X, Y, rcond=None)",
+        "a,b,c = coef",
+        "model = a*ch0 + b*ch1 + c",
+        "result = model"
+      ]
+    },
+    {
+      "example_id": 31,
+      "description": "机械故障诊断：计算时域指标 (峰值因子Kp、波形因子Ku、峭度因子Kt、偏度因子Ks、脉冲因子Ki)",
+      "sample_prompt": "对 ch0 计算各指标，然后把它们打包成同长度数组(全填相同值)",
+      "possible_output": [
+        "import numpy as np",
+        "sig = ch0",
+        "N = len(sig)",
+        "mean_val = np.mean(sig)",
+        "rms_val = np.sqrt(np.mean(sig**2))",
+        "peak_val = np.max(np.abs(sig))",
+        "abs_mean = np.mean(np.abs(sig))",
+        "# 峭度 Kt = (1/N)*sum(x^4)/(rms^4)",
+        "kurt = np.mean((sig-mean_val)**2)**2/(rms_val**4)",
+        "# 偏度 Ks = sum((x-mean)^3)/(N * std^3) => 这里略简化",
+        "skew = np.mean((sig-mean_val)**3)/(np.std(sig)**3 + 1e-12)",
+        "# 峰值因子 Kp = peak / rms",
+        "kp = peak_val/(rms_val+1e-12)",
+        "# 波形因子 Ku = rms / (mean(|x|)+1e-12)",
+        "ku = rms_val/(abs_mean+1e-12)",
+        "# 脉冲因子 Ki = peak / (abs_mean+1e-12)",
+        "ki = peak_val/(abs_mean+1e-12)",
+        "# 把它们打包为常量数组(长度与 ch0 一致)",
+        "metrics = np.array([kp, ku, kurt, skew, ki], dtype=sig.dtype)",
+        "result = np.full_like(sig, kp)  # 示例中仅填充 kp，可根据需要调整"
+      ]
+    },
+    {
+      "example_id": 32,
+      "description": "A计权(近似) + 微分(速度→加速度) + 积分(加速度→速度) 等",
+      "sample_prompt": "对 ch0 做 A计权后把它微分，然后再积分回去(仅演示)",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as ss",
+        "# 1) A计权(简化): just multiply freq>1000 by some factor? Demo.",
+        "# For real A-weighting, we need a known filter. 这里演示一下.",
+        "# 2) 微分: diff(ch0)/dt => same length => we do discrete conv.",
+        "# 3) 积分: cumul.",
+        "# 仅做简单demo,最后保证 result.shape==ch0.shape",
+        "fs = 25600",
+        "# Step1: A-weighting简化 => 只为演示, 把>200 Hz部件放大1.5倍",
+        "freqs = np.fft.fftfreq(len(ch0), d=1/fs)",
+        "fftvals = np.fft.fft(ch0)",
+        "aw = fftvals.copy()",
+        "idx = np.where(np.abs(freqs)>200)",
+        "aw[idx] *= 1.5",
+        "awed = np.fft.ifft(aw).real",
+        "# Step2: 微分(简化), discrete difference",
+        "diffed = np.zeros_like(awed)",
+        "diffed[1:] = (awed[1:] - awed[:-1])*fs  # approximate derivative",
+        "# Step3: 积分 => 累加/ fs",
+        "integ = np.cumsum(diffed)/fs",
+        "result = integ"
+      ]
+    },
+    {
+      "example_id": 33,
+      "description": "应用各种窗函数(Hanning, Taylor, Rectangular等)对 ch0 进行加窗",
+      "sample_prompt": "ch0 与 Hanning 窗相乘",
+      "possible_output": [
+        "import numpy as np",
+        "from scipy.signal import windows",
+        "N = len(ch0)",
+        "win = windows.hann(N)",
+        "windowed = ch0*win",
+        "result = windowed"
+      ]
+    },
+    {
+      "example_id": 34,
+      "description": "触发条件(比如转速信号>1000rpm,或持续时间100ms后才记录),仅保留有效段,其余置0",
+      "sample_prompt": "ch1是转速, 当 ch1>1000 => keep ch0, else=0",
+      "possible_output": [
+        "import numpy as np",
+        "mask = (ch1>1000)",
+        "# 只保留符合条件, 其余=0",
+        "temp = np.zeros_like(ch0)",
+        "temp[mask] = ch0[mask]",
+        "result = temp"
+      ]
+    },
+    {
+      "example_id": 35,
+      "description": "时域信号 + 转速信号 => Hilbert变换(包络) => 生成 result",
+      "sample_prompt": "ch0(振动) & ch1(转速?), 合并后做包络(简化), 不安全操作都别做",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as ss",
+        "# 这里暂不深究转速的用法, 只对 ch0 做 Hilbert 包络.",
+        "hilb = ss.hilbert(ch0)",
+        "envelope = np.abs(hilb)",
+        "result = envelope"
+      ]
+    },
+    {
+      "example_id": 36,
+      "description": "特征分析: 阶次谱/三维频谱, 这里仅演示频谱 + re-sample",
+      "sample_prompt": "ch0 => 频谱 => 重采样成[阶次], 不做文件IO",
+      "possible_output": [
+        "import numpy as np",
+        "N = len(ch0)",
+        "fftvals = np.fft.fft(ch0)",
+        "amp = np.abs(fftvals)*2/N",
+        "# 这里简化成 0~N/2 做阶次, e.g. 0~100阶",
+        "# assumed speed=some means => skip",
+        "result = amp[:N//2]"
+      ]
+    },
+    {
+      "example_id": 37,
+      "description": "倒谱分析(cepstrum): ch0 => FFT => log => IFFT => result",
+      "sample_prompt": "对 ch0 做倒谱 => result",
+      "possible_output": [
+        "import numpy as np",
+        "from scipy.fft import fft, ifft",
+        "Y = fft(ch0)",
+        "log_mag = np.log(np.abs(Y)+1e-12)",
+        "ceps = ifft(log_mag)",
+        "result = ceps.real"
+      ]
+    },
+    {
+      "example_id": 38,
+      "description": "计算(倍频程) => 1/3倍频程能量(简化)",
+      "sample_prompt": "对 ch0 做FFT => 用带宽叠加 => result same length",
+      "possible_output": [
+        "import numpy as np",
+        "from scipy.fft import fft, ifft, fftfreq",
+        "fs=25600",
+        "N=len(ch0)",
+        "freq=fftfreq(N,1/fs)",
+        "Y=fft(ch0)",
+        "amp = np.abs(Y)*2/N",
+        "amp[freq<0] = 0 # 只考虑正频",
+        "result = np.zeros_like(ch0)",
+        "# 1/3倍频程带 => 只做简化累加some freq band.",
+        "# 这里仅演示.",
+        "for i in range(N):",
+        "    f = freq[i]",
+        "    if 50 < f < 100: # example band",
+        "        result[i] = amp[i]"
+      ]
+    },
+    {
+      "example_id": 39,
+      "description": "心理声学(响度, 粗糙度, 波动度, 音调) => 仅示例先对ch0做响度计算(虚构)",
+      "sample_prompt": "对 ch0 进行简单响度公式 = 20*log10(rms(x)/ref)",
+      "possible_output": [
+        "import numpy as np",
+        "rmsval = np.sqrt(np.mean(ch0**2))",
+        "ref = 1e-6",
+        "N_val = 20*np.log10(rmsval/ref + 1e-12)",
+        "result = np.full_like(ch0, N_val)"
+      ]
+    },
+    {
+      "example_id": 40,
+      "description": "故障监测诊断: 自学习(这里仅示例对 ch0 进行均值±3sigma判断故障)",
+      "sample_prompt": "ch0 => mean±3*std => 超过则 result=1, 否则=0",
+      "possible_output": [
+        "import numpy as np",
+        "mean_v = np.mean(ch0)",
+        "std_v = np.std(ch0)",
+        "upper = mean_v + 3*std_v",
+        "lower = mean_v - 3*std_v",
+        "result = np.where((ch0>upper)|(ch0<lower),1,0)"
+      ]
+    },
+    {
+      "example_id": 41,
+      "description": "时域参数: RMS,Mean,Min,Max => 逐点输出(不变长度)",
+      "sample_prompt": "对 ch0 计算 RMS,Mean,Min,Max => result 全部填 RMS",
+      "possible_output": [
+        "import numpy as np",
+        "mean_v = np.mean(ch0)",
+        "rms_v = np.sqrt(np.mean(ch0**2))",
+        "mn = np.min(ch0)",
+        "mx = np.max(ch0)",
+        "# 仅示例: 全部赋值成 RMS",
+        "result = np.full_like(ch0, rms_v)"
+      ]
+    },
+    {
+      "example_id": 42,
+      "description": "公差带检查: ch0 是否超出 bandLow~bandHigh => result=1或0",
+      "sample_prompt": "bandLow= -2.0, bandHigh= 2.0 => 用where()",
+      "possible_output": [
+        "import numpy as np",
+        "bandLow=-2.0",
+        "bandHigh=2.0",
+        "result = np.where((ch0<bandLow)|(ch0>bandHigh),1,0)"
+      ]
+    },
+    {
+      "example_id": 43,
+      "description": "倒谱分析(cepstrum): ch0 => FFT => log => IFFT => result",
+      "sample_prompt": "对 ch0 做倒谱 => result",
+      "possible_output": [
+        "import numpy as np",
+        "from scipy.fft import fft, ifft",
+        "Y = fft(ch0)",
+        "log_mag = np.log(np.abs(Y)+1e-12)",
+        "ceps = ifft(log_mag)",
+        "result = ceps.real"
+      ]
+    },
+    {
+      "example_id": 44,
+      "description": "“鬼频”高阶次 => 仅演示对 ch0 FFT 后, 取>=100阶的部分并 zeros out,再IFFT",
+      "sample_prompt": "ch0 => FFT => freq>some threshold => set0 => IFFT => result",
+      "possible_output": [
+        "import numpy as np",
+        "from scipy.fft import fft, ifft, fftfreq",
+        "fs=25600",
+        "N=len(ch0)",
+        "F=fftfreq(N, 1/fs)",
+        "Y=fft(ch0)",
+        "# assume 100阶 => freq=100*(rpm/60)? 这里简化 threshold=2000 Hz.",
+        "mask = np.abs(F)<2000",
+        "Y[~mask]=0",
+        "result = ifft(Y).real"
+      ]
+    }
+  ]
+}

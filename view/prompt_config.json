@@ -1,0 +1,118 @@
+{
+  "system_prompt": "你是NVH软件的AI助理，负责为“用户自定义信号”功能生成可执行的Python脚本。\n用户在对话框中多选了若干通道（ch0,ch1,...）以及时间向量 t。\n需求：\n1) 代码仅包含和信号合成/计算相关的逻辑，必须是纯Python。\n2) 请务必将最终结果保存为 `result` 变量 (numpy数组)；其长度须与输入通道相同。\n3) 不要执行任何危险或不可预期的操作（如删除文件等）。\n4) 只可 import numpy as np(若需要矩阵运算)，不引入其他库。\n5) 等等...\n",
+  "examples": [
+    {
+      "example_id": 1,
+      "description": "将 ch0 与 ch1 相加合成为一个新通道",
+      "sample_prompt": "请把 ch0 和 ch1 相加，输出 result",
+      "possible_output": [
+        "import numpy as np",
+        "result = ch0 + ch1"
+      ]
+    },
+    {
+      "example_id": 2,
+      "description": "实时转速(更新版)",
+      "sample_prompt": "对 ch0(阈值2.5V) 做二值化，检测各沿间隔得到实时 RPM，deg_per_edge=3°",
+      "possible_output": [
+        "import numpy as np",
+        "",
+        "fs = 25600",
+        "deg_per_edge = 3.0",
+        "",
+        "binary_signal = np.where(ch0 > 2.5, 1, 0)",
+        "edges = np.diff(binary_signal)",
+        "rising_edges = np.where(edges == 1)[0] + 1",
+        "falling_edges = np.where(edges == -1)[0] + 1",
+        "all_edges = np.sort(np.concatenate((rising_edges, falling_edges)))",
+        "speed_array = np.zeros_like(ch0)",
+        "for i in range(len(all_edges) - 1):",
+        "    t1 = all_edges[i]",
+        "    t2 = all_edges[i + 1]",
+        "    time_interval = (t2 - t1) / fs",
+        "    if time_interval > 0:",
+        "        speed = (deg_per_edge / 360.0) / time_interval * 60.0",
+        "        speed_array[t1:t2] = speed",
+        "if len(all_edges) > 0:",
+        "    speed_array[:all_edges[0]] = speed_array[all_edges[0]]",
+        "    speed_array[all_edges[-1]:] = speed_array[all_edges[-1] - 1]",
+        "result = speed_array"
+      ]
+    },
+    {
+      "example_id": 3,
+      "description": "对 ch0 做自相关 (simple)",
+      "sample_prompt": "对 ch0 进行自相关计算",
+      "possible_output": [
+        "import numpy as np",
+        "result = np.correlate(ch0, ch0, mode='same')"
+      ]
+    },
+    {
+      "example_id": 4,
+      "description": "力环信号相对坐标系转到静态坐标系",
+      "sample_prompt": "将 ch0, ch1 分别代表相对坐标下的 Fx, Fy，转到静态坐标系",
+      "possible_output": [
+        "import numpy as np",
+        "Fx0 = ch0 * np.cos(2 * np.pi * 8.3 * t) + ch1 * np.sin(2 * np.pi * 8.3 * t)",
+        "result = Fx0"
+      ]
+    },
+    {
+      "example_id": 5,
+      "description": "去除趋势项",
+      "sample_prompt": "对 ch0 做线性 detrend",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as signal",
+        "result = signal.detrend(ch0, type='linear')"
+      ]
+    },
+    {
+      "example_id": 6,
+      "description": "提取包络",
+      "sample_prompt": "从 ch0 提取包络，采用绝对值 + 滑动平均",
+      "possible_output": [
+        "import numpy as np",
+        "N = 10",
+        "abs_data = np.abs(ch0)",
+        "cum = np.cumsum(np.insert(abs_data, 0, 0))",
+        "ma = (cum[N:] - cum[:-N]) / N",
+        "result = np.concatenate([abs_data[:N-1], ma])"
+      ]
+    },
+    {
+      "example_id": 7,
+      "description": "滚动均值",
+      "sample_prompt": "对 ch0 做 3 点均值滤波",
+      "possible_output": [
+        "import numpy as np",
+        "result = np.convolve(ch0, np.ones(3) / 3, mode='same')"
+      ]
+    },
+    {
+      "example_id": 8,
+      "description": "多通道相关性",
+      "sample_prompt": "计算 ch0 和 ch1 的相关系数",
+      "possible_output": [
+        "import numpy as np",
+        "ch0_mean = np.mean(ch0)",
+        "ch1_mean = np.mean(ch1)",
+        "num = np.sum((ch0 - ch0_mean) * (ch1 - ch1_mean))",
+        "den = np.sqrt(np.sum((ch0 - ch0_mean) ** 2) * np.sum((ch1 - ch1_mean) ** 2))",
+        "result = num / den"
+      ]
+    },
+    {
+      "example_id": 9,
+      "description": "Hilbert变换",
+      "sample_prompt": "对 ch0 进行 Hilbert 变换，提取瞬时相位",
+      "possible_output": [
+        "import numpy as np",
+        "import scipy.signal as signal",
+        "hilbert_transform = signal.hilbert(ch0)",
+        "result = np.angle(hilbert_transform)"
+      ]
+    }
+  ]
+}
