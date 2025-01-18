@@ -116,10 +116,8 @@ class AppController:
         """Processor 处理完回调此方法，更新 View。"""
         self.processing_results = results
 
-        # === (1) 收集新的通道并存入 self.channel_options ===
         self.channel_options = self._collect_channels_from_results(results)
 
-        # === (2) 原有逻辑：启用可视化Tab、更新视图、启用UserDefine按钮、刷新Global Params 等 ===
         self.view.enable_visualization_tabs()
         self.view.update_visualization_options(results)
         self.view.enable_user_define_button(True)
@@ -199,6 +197,61 @@ class AppController:
                     if item['name'] == sensor_name:
                         return item
         return None
+
+
+    def get_oma_time_data(self, file_name, channel_list):
+        import numpy as np
+        if not self.processing_results:
+            return None, 0.0
+        fs = self.params.sampling_rate if self.params else 25600.0
+
+        # 找到指定 file_name
+        target_file = None
+        for f_res in self.processing_results.files:
+            if f_res['file_name'] == file_name:
+                target_file = f_res
+                break
+        if not target_file:
+            print(f"未找到文件: {file_name}")
+            return None, fs
+
+        fft_list = target_file.get('fft_results', [])
+
+        arrays = []
+        used_channels = []
+        min_len = None
+
+        for ch in channel_list:
+            arr = None
+            for e in fft_list:
+                if e['fft_result'].name == ch:
+                    arr = e['data_converted']
+                    break
+            if arr is None:
+                print(f"通道 {ch} 不在 file '{file_name}' 里!")
+                continue  # or raise
+
+            this_len = len(arr)
+            if min_len is None:
+                min_len = this_len
+            else:
+                min_len = min(min_len, this_len)
+
+            arrays.append(arr)
+            used_channels.append(ch)
+
+        if not arrays:
+            print(f"文件 '{file_name}' 未获取到任何通道!")
+            return None, fs
+
+        # 截断
+        for i in range(len(arrays)):
+            arrays[i] = arrays[i][:min_len]
+
+        data_array = np.column_stack(arrays)
+        return data_array, fs
+
+
 
     def get_vk2_parameters(self):
         """从View读取 vk2_r, vk2_filtord, freq_list。"""

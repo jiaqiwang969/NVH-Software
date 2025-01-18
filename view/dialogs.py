@@ -22,6 +22,114 @@ from pydub import AudioSegment  # 如果需要使用 pydub
 
 # view/dialogs.py
 
+class OmaParamDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.controller = parent.controller
+        self.title("选择 OMA 文件 & 通道 & 参数")
+
+        # 1) 收集可选文件名
+        self.file_options = []
+        if self.controller.processing_results:
+            for f_res in self.controller.processing_results.files:
+                fname = f_res['file_name']
+                self.file_options.append(fname)
+        else:
+            # 也可以提示 “没有任何文件可选”
+            pass
+
+        self.selected_file_var = tk.StringVar()
+        if self.file_options:
+            self.selected_file_var.set(self.file_options[0])  # 默认选第一个
+
+        # 2) 收集可选通道 (也可以在对话框内做下拉或多选)
+        #    这里仅演示：你若已在 parent.view.controller.channel_options 有通道列表
+        #    也可再做一次 filtering
+        self.all_channels = self.controller.channel_options
+
+        # 3) 其他 SSI/FDD 参数
+        self.ordmax_var = tk.IntVar(value=30)
+        self.br_var = tk.IntVar(value=30)
+        self.nxseg_var = tk.IntVar(value=1024)
+        self.method_SD_var = tk.StringVar(value="cor")
+        self.decimate_var = tk.IntVar(value=10)
+
+        # 存放用户多选通道
+        self.selected_channels = []
+
+        self._create_widgets()
+
+    def _create_widgets(self):
+        # 顶部: 文件选择
+        file_frame = tk.LabelFrame(self, text="选择文件")
+        file_frame.pack(fill=tk.X, padx=5, pady=5)
+        tk.Label(file_frame, text="File:").pack(side=tk.LEFT, padx=5)
+        self.file_combo = ttk.Combobox(file_frame, textvariable=self.selected_file_var,
+                                       values=self.file_options, state="readonly", width=30)
+        self.file_combo.pack(side=tk.LEFT, padx=5)
+
+        # 通道多选
+        ch_frame = tk.LabelFrame(self, text="选择通道(可多选)")
+        ch_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.ch_listbox = tk.Listbox(ch_frame, selectmode=tk.MULTIPLE, height=8, width=30)
+        self.ch_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll_ch = tk.Scrollbar(ch_frame, command=self.ch_listbox.yview)
+        scroll_ch.pack(side=tk.RIGHT, fill=tk.Y)
+        self.ch_listbox.config(yscrollcommand=scroll_ch.set)
+
+        # 将所有 available 通道插入 Listbox
+        for ch in self.all_channels:
+            self.ch_listbox.insert(tk.END, ch)
+
+        # SSI 参数
+        ssi_frame = tk.LabelFrame(self, text="SSI 参数")
+        ssi_frame.pack(fill=tk.X, padx=5, pady=5)
+        tk.Label(ssi_frame, text="ordmax:").grid(row=0, column=0, sticky=tk.E, padx=5)
+        tk.Entry(ssi_frame, textvariable=self.ordmax_var, width=6).grid(row=0, column=1, sticky=tk.W)
+        tk.Label(ssi_frame, text="br:").grid(row=0, column=2, sticky=tk.E, padx=5)
+        tk.Entry(ssi_frame, textvariable=self.br_var, width=6).grid(row=0, column=3, sticky=tk.W)
+
+        # FDD 参数
+        fdd_frame = tk.LabelFrame(self, text="FDD 参数")
+        fdd_frame.pack(fill=tk.X, padx=5, pady=5)
+        tk.Label(fdd_frame, text="nxseg:").grid(row=0, column=0, sticky=tk.E, padx=5)
+        tk.Entry(fdd_frame, textvariable=self.nxseg_var, width=6).grid(row=0, column=1, sticky=tk.W)
+        tk.Label(fdd_frame, text="method_SD:").grid(row=0, column=2, sticky=tk.E, padx=5)
+        tk.Entry(fdd_frame, textvariable=self.method_SD_var, width=8).grid(row=0, column=3, sticky=tk.W)
+
+        # decimate
+        misc_frame = tk.LabelFrame(self, text="其他")
+        misc_frame.pack(fill=tk.X, padx=5, pady=5)
+        tk.Label(misc_frame, text="decimate:").grid(row=0, column=0, sticky=tk.E, padx=5)
+        tk.Entry(misc_frame, textvariable=self.decimate_var, width=6).grid(row=0, column=1, sticky=tk.W)
+
+        # 确定/取消按钮
+        btn_frame = tk.Frame(self)
+        btn_frame.pack(pady=5)
+        tk.Button(btn_frame, text="确定", command=self.on_ok).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="取消", command=self.destroy).pack(side=tk.LEFT, padx=5)
+
+    def on_ok(self):
+        # 收集用户多选通道
+        sel_indices = self.ch_listbox.curselection()
+        if not sel_indices:
+            tk.messagebox.showwarning("警告", "请至少选择一个通道!")
+            return
+        self.selected_channels = [self.ch_listbox.get(i) for i in sel_indices]
+
+        self.selected_file = self.selected_file_var.get()  # 用户选的 file
+
+        self.ordmax = self.ordmax_var.get()
+        self.br = self.br_var.get()
+        self.nxseg = self.nxseg_var.get()
+        self.method_SD = self.method_SD_var.get()
+        self.decimate_q = self.decimate_var.get()
+
+        # 关闭对话框
+        self.destroy()
+
+
+
 class GlobalParamManagerDialog(tk.Toplevel):
     """
     用来查看/管理全局参数(多级键).

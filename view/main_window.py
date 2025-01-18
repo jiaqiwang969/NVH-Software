@@ -17,7 +17,7 @@ from pyoma2.algorithms.ssi import SSIdat
 
 
 
-from .dialogs import UserDefineDialog, SensorSettingsDialog
+from .dialogs import UserDefineDialog, SensorSettingsDialog, OmaParamDialog
 from model.data_models import SensorSettings
 
 class MainWindow(tk.Tk):
@@ -28,6 +28,7 @@ class MainWindow(tk.Tk):
     def __init__(self, controller):
         super().__init__()
         self.controller = controller
+        self.last_oma_channels_for_file = {}
         self.title("FFT 数据处理")
         try:
             self.font_prop = FontProperties(fname='SimHei.ttf')  # 确保字体文件存在
@@ -36,13 +37,15 @@ class MainWindow(tk.Tk):
 
         # 初始化变量
         self.init_variables()
+        self.canvas_oma = None
+        self.fig_oma = None
         # 创建 Notebook
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
-        self.create_tabs()
 
         # 绑定复制、粘贴快捷键
         self.bind_copy_paste(self)
+        self.create_tabs()
 
     def init_variables(self):
         # 数据处理变量
@@ -950,7 +953,10 @@ class MainWindow(tk.Tk):
 
 
     def create_oma_widgets(self, parent_frame):
-        parent_frame.columnconfigure(0, weight=1)
+        """
+        在 OMA 选项卡上，用 grid() 来布置左侧 plot_frame、右侧 control_frame。
+        """
+        parent_frame.columnconfigure(0, weight=1)  # 让第0列可扩展
         parent_frame.columnconfigure(1, weight=0)
         parent_frame.columnconfigure(2, weight=0)
         parent_frame.rowconfigure(0, weight=1)
@@ -958,6 +964,9 @@ class MainWindow(tk.Tk):
         # 左侧绘图区域
         plot_frame = ttk.Frame(parent_frame)
         plot_frame.grid(row=0, column=0, sticky='nsew')
+        # 我们让 plot_frame 自己再做一次 row/column configure，以便内部的 canvas 能自适应
+        plot_frame.rowconfigure(0, weight=1)
+        plot_frame.columnconfigure(0, weight=1)
 
         # 中间的隐藏/显示按钮 Frame
         toggle_frame = ttk.Frame(parent_frame, width=10)
@@ -971,119 +980,276 @@ class MainWindow(tk.Tk):
         control_frame = ttk.Frame(parent_frame, width=300)
         control_frame.grid(row=0, column=2, sticky="nsew")
 
-        # 在右侧增加一个“一次性绘制”按钮
+        # ========== 1) 文件选择 =============
+        tk.Label(control_frame, text="选择文件:").pack(anchor=tk.W, padx=5, pady=5)
+        self.oma_file_var = tk.StringVar()
+        self.file_menu_oma = ttk.Combobox(
+            control_frame,
+            textvariable=self.oma_file_var,
+            values=self.file_options,  # 处理完成后再通过 update_visualization_options() 更新
+            state='readonly',
+            width=24
+        )
+        self.file_menu_oma.pack(anchor=tk.W, padx=5, pady=2)
+
+        # 绑定事件：当用户切换“选择文件”下拉时，调用 on_oma_file_changed
+        self.file_menu_oma.bind("<<ComboboxSelected>>", self.on_oma_file_changed)
+
+        # ========== 2) 多选通道 =============
+        tk.Label(control_frame, text="选择通道(可多选):").pack(anchor=tk.W, padx=5, pady=5)
+        channel_frame = tk.Frame(control_frame)
+        channel_frame.pack(fill=tk.X, padx=5, pady=2)
+        scrollbar = tk.Scrollbar(channel_frame, orient=tk.VERTICAL)
+        self.oma_channel_listbox = tk.Listbox(
+            channel_frame, selectmode=tk.MULTIPLE,
+            yscrollcommand=scrollbar.set, height=6, width=24
+        )
+        scrollbar.config(command=self.oma_channel_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.oma_channel_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # 绑定事件：当用户在 listbox 中点选/取消通道时，调用 on_oma_channel_changed
+        self.oma_channel_listbox.bind("<<ListboxSelect>>", self.on_oma_channel_changed)
+
+
+        # ========== 3) OMA 参数(SSI/FDD) ===========
+        param_frame = tk.LabelFrame(control_frame, text="OMA参数(SSI/FDD)")
+        param_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        tk.Label(param_frame, text="ordmax:").grid(row=0, column=0, padx=3, pady=3, sticky=tk.E)
+        self.oma_ordmax_var = tk.StringVar(value="30")
+        tk.Entry(param_frame, textvariable=self.oma_ordmax_var, width=5).grid(row=0, column=1, sticky=tk.W)
+
+        tk.Label(param_frame, text="br:").grid(row=0, column=2, padx=3, sticky=tk.E)
+        self.oma_br_var = tk.StringVar(value="30")
+        tk.Entry(param_frame, textvariable=self.oma_br_var, width=5).grid(row=0, column=3, sticky=tk.W)
+
+        tk.Label(param_frame, text="nxseg:").grid(row=1, column=0, padx=3, sticky=tk.E)
+        self.oma_nxseg_var = tk.StringVar(value="1024")
+        tk.Entry(param_frame, textvariable=self.oma_nxseg_var, width=6).grid(row=1, column=1, sticky=tk.W)
+
+        tk.Label(param_frame, text="method_SD:").grid(row=1, column=2, padx=3, sticky=tk.E)
+        self.oma_method_var = tk.StringVar(value="cor")
+        tk.Entry(param_frame, textvariable=self.oma_method_var, width=6).grid(row=1, column=3, sticky=tk.W)
+
+        tk.Label(param_frame, text="decimate:").grid(row=2, column=0, padx=3, sticky=tk.E)
+        self.oma_decimate_var = tk.StringVar(value="10")
+        tk.Entry(param_frame, textvariable=self.oma_decimate_var, width=6).grid(row=2, column=1, sticky=tk.W)
+
+        # ========== 4) 统一频率范围 ==============
+        tk.Label(control_frame, text="统一频率范围:").pack(anchor=tk.W, padx=5, pady=5)
+        freq_frame = tk.Frame(control_frame)
+        freq_frame.pack(anchor=tk.W, padx=5, pady=2)
+        tk.Label(freq_frame, text="下限:").pack(side=tk.LEFT)
+        self.freq_min_var = tk.StringVar(value="0.0")
+        tk.Entry(freq_frame, textvariable=self.freq_min_var, width=6).pack(side=tk.LEFT, padx=2)
+        tk.Label(freq_frame, text="上限:").pack(side=tk.LEFT)
+        self.freq_max_var = tk.StringVar(value="10.0")
+        tk.Entry(freq_frame, textvariable=self.freq_max_var, width=6).pack(side=tk.LEFT, padx=2)
+
+        # ========== 5) 按钮区 =============
         ttk.Button(control_frame, text="绘制 SSI+FDD", command=self.plot_oma_combined).pack(padx=5, pady=5)
         ttk.Button(control_frame, text="保存 OMA 图", command=self.save_oma_figure).pack(padx=5, pady=5)
 
-        ttk.Label(control_frame, text="(此处可放一些 OMA 算法参数设置)").pack(pady=20)
+        tk.Label(control_frame, text="(此处可放更多设置)").pack(pady=10)
 
-        # 创建一个空白 Figure，用于承载合并图
-        self.figure_oma = plt.Figure(figsize=(8, 5))
-        self.canvas_oma = FigureCanvasTkAgg(self.figure_oma, master=plot_frame)
-        self.canvas_oma.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        # 为了后续能随时清空/重画，这里先不创建轴
-        # 等真正点击按钮时，再创建 ax_left/ax_right
-
+        # ========== 左侧图像区域 =============
+        # 注意：这次我们统一用 grid()，所以：
+        # self.fig_oma 是实际的Figure
+        self.fig_oma = plt.Figure(figsize=(8, 5))
+        # 在 Python 里，这里先不显示 / 不贴任何东西。等后面 plot_oma_combined 时再画。
+        # 如果需要先来个空白画布，也可以马上做 canvas_oma
 
 
+        # 先清掉旧的 canvas
+        if self.canvas_oma:
+            self.canvas_oma.get_tk_widget().destroy()
 
-    def create_oma_widgets(self, parent_frame):
-        parent_frame.columnconfigure(0, weight=1)
-        parent_frame.columnconfigure(1, weight=0)
-        parent_frame.columnconfigure(2, weight=0)
-        parent_frame.rowconfigure(0, weight=1)
+        #self.fig_oma = fig_ssi  # 或者 new figure
+        self.canvas_oma = FigureCanvasTkAgg(self.fig_oma, master=plot_frame)
+        # 不要再 pack() 了，统一用 grid：
+        self.canvas_oma.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-        # 左侧绘图区域
-        plot_frame = ttk.Frame(parent_frame)
-        plot_frame.grid(row=0, column=0, sticky='nsew')
+        # 画图
+        self.canvas_oma.draw()
 
-        # 中间的隐藏/显示按钮 Frame
-        toggle_frame = ttk.Frame(parent_frame, width=10)
-        toggle_frame.grid(row=0, column=1, sticky="ns")
-        toggle_frame.rowconfigure(0, weight=1)
-        toggle_btn = tk.Button(toggle_frame, text=">>")
-        toggle_btn.grid(row=0, column=0)
-        toggle_btn.config(command=lambda: self.toggle_frame(parent_frame, control_frame, toggle_btn))
+    def on_oma_channel_changed(self, event=None):
+        """
+        当用户在 OMA 多选通道的 listbox 中做了选择变更，就更新 self.last_oma_channels_for_file
+        """
+        selected_file = self.oma_file_var.get()
+        if not selected_file:
+            return
 
-        # 右侧控制区
-        control_frame = ttk.Frame(parent_frame, width=300)
-        control_frame.grid(row=0, column=2, sticky="nsew")
+        # 获取当前 listbox 中的所有被选中的通道
+        sel_indices = self.oma_channel_listbox.curselection()
+        selected_channels = [self.oma_channel_listbox.get(i) for i in sel_indices]
 
-        # 在右侧增加一个“一次性绘制”按钮
-        ttk.Button(control_frame, text="绘制 SSI+FDD", command=self.plot_oma_combined).pack(padx=5, pady=5)
-        ttk.Button(control_frame, text="保存 OMA 图", command=self.save_oma_figure).pack(padx=5, pady=5)
+        # 存入字典，记住：选中的通道列表
+        self.last_oma_channels_for_file[selected_file] = selected_channels
 
-        ttk.Label(control_frame, text="(此处可放一些 OMA 算法参数设置)").pack(pady=20)
 
-        # == 不在这里创建 figure_oma；只保留一个容器 Frame，用于容纳 Canvas ==
-        #   我们留一个变量保存这个位置
-        self.oma_plot_frame = plot_frame
+    def on_oma_file_changed(self, event=None):
+        """
+        当用户在 OMA 选项卡的文件下拉框里切换文件时，尝试恢复该文件上次记住的通道多选
+        """
+        selected_file = self.oma_file_var.get()
+        if not selected_file:
+            return
 
-        # 用于存放后续生成的 Figure 对象
-        self.fig_oma = None
-        self.canvas_oma = None
+        # 先清除当前 listbox 的选中状态
+        self.oma_channel_listbox.select_clear(0, tk.END)
 
+        # 如果我们以前记住过这个文件的通道选项
+        if selected_file in self.last_oma_channels_for_file:
+            saved_channels = self.last_oma_channels_for_file[selected_file]  # list of str
+            # 在当前 listbox 里找到这些通道的 index，并选中
+            for ch_name in saved_channels:
+                # 找到 ch_name 在 listbox 中的 index
+                index = self._find_listbox_index(self.oma_channel_listbox, ch_name)
+                if index is not None:
+                    self.oma_channel_listbox.select_set(index)
+        else:
+            # 如果没记过，就不做额外操作，也可以考虑默认选第一个或都不选
+            pass
+
+
+    def _find_listbox_index(self, listbox, target_str):
+        """
+        小工具：在给定 listbox 中查找某字符串并返回下标，找不到就返回 None
+        """
+        size = listbox.size()
+        for i in range(size):
+            if listbox.get(i) == target_str:
+                return i
+        return None
+
+
+
+    def _refresh_oma_channel_list(self):
+        """将 self.channel_options 填充到 self.oma_channel_listbox."""
+        self.oma_channel_listbox.delete(0, tk.END)
+        for ch in self.channel_options:
+            self.oma_channel_listbox.insert(tk.END, ch)
+
+
+
+
+
+    def select_oma_channels(self):
+        dlg = OmaParamDialog(self)
+        self.wait_window(dlg)
+        if not dlg.selected_channels:
+            return  # 用户取消或没选通道
+        if not dlg.selected_file:
+            return  # 用户没选文件或对话框逻辑
+        # 把收集到的值存起来
+        self.oma_file = dlg.selected_file
+        self.oma_channels = dlg.selected_channels
+        self.oma_params = {
+            "ordmax": dlg.ordmax,
+            "br": dlg.br,
+            "nxseg": dlg.nxseg,
+            "method_SD": dlg.method_SD,
+            "decimate_q": dlg.decimate_q
+        }
+        messagebox.showinfo("提示", 
+            f"已选择文件: {self.oma_file}\n"
+            f"通道: {self.oma_channels}\n"
+            f"OMA参数: {self.oma_params}"
+        )
 
 
     def plot_oma_combined(self):
-        """
-        在同一个 Figure 上绘制 SSI(左轴) + FDD(右轴)，并嵌入 Tkinter。
-        """
-        # （1）先让 PyOMA2 直接创建 SSI 图：
-        data, ground_truth = example_data()
-        simp_5dof = SingleSetup(data, fs=200)
-        simp_5dof.decimate_data(q=10)
+        # 1) 读取“文件”与“多选通道”
+        file_name = self.oma_file_var.get()
+        if not file_name:
+            messagebox.showwarning("警告", "请选择要做 OMA 的文件！")
+            return
 
-        fdd = FDD(name="FDD", nxseg=1024, method_SD="cor")
-        ssidat = SSIdat(name="SSIdat", br=30, ordmax=30)
-        simp_5dof.add_algorithms(fdd, ssidat)
-        simp_5dof.run_all()
+        sel_indices = self.oma_channel_listbox.curselection()
+        if not sel_indices:
+            messagebox.showwarning("警告", "请至少选择一个通道做 OMA！")
+            return
+        selected_channels = [self.oma_channel_listbox.get(i) for i in sel_indices]
 
-        # PyOMA2 -> 画 SSI 稳定图
-        fig_ssi, ax_ssi = ssidat.plot_stab(freqlim=(0, 10), hide_poles=False)
+        # 2) 读取 OMA 参数
+        try:
+            ordmax = int(self.oma_ordmax_var.get())
+            br = int(self.oma_br_var.get())
+            nxseg = int(self.oma_nxseg_var.get())
+            method_SD = self.oma_method_var.get().strip()
+            decimate_q = int(self.oma_decimate_var.get())
+        except ValueError:
+            messagebox.showwarning("警告", "SSI/FDD参数(ordmax, br, nxseg, decimate)必须是数字！")
+            return
 
-        # （2）在同一个 fig_ssi 上加一条右轴
+        # 3) 读取频率范围
+        try:
+            freq_min = float(self.freq_min_var.get())
+            freq_max = float(self.freq_max_var.get())
+            if freq_min < 0 or freq_min >= freq_max:
+                messagebox.showwarning("警告", "频率范围不合法，请检查输入！")
+                return
+        except ValueError:
+            messagebox.showwarning("警告", "频率上下限应是数字！")
+            return
+
+        # 4) 从 controller 中获取时域数据
+        data_array, fs = self.controller.get_oma_time_data(file_name, selected_channels)
+        if data_array is None or data_array.size == 0:
+            messagebox.showerror("错误", "未能获取 OMA 时域数据，请检查通道/文件。")
+            return
+
+        print("拿到的时域数据形状:", data_array.shape, "采样率:", fs)
+
+        # 5) 构建 SingleSetup
+        from pyoma2.setup.single import SingleSetup
+        from pyoma2.algorithms.fdd import FDD
+        from pyoma2.algorithms.ssi import SSIdat
+
+        simp = SingleSetup(data_array, fs=fs)
+        simp.decimate_data(q=decimate_q)
+
+        fdd = FDD(name="FDD", nxseg=nxseg, method_SD=method_SD)
+        ssidat = SSIdat(name="SSIdat", br=br, ordmax=ordmax)
+        simp.add_algorithms(fdd, ssidat)
+        simp.run_all()
+
+        # 6) 绘图
+        fig_ssi, ax_ssi = ssidat.plot_stab(freqlim=(freq_min, freq_max), hide_poles=False)
         ax_fdd = ax_ssi.twinx()
-        ax_fdd.set_ylabel("FDD Magnitude", color='blue')
-        ax_ssi.set_title("SSI + FDD (CMIF) on the same figure", fontproperties=self.font_prop)
 
-        # （3）PyOMA2 的 fdd.plot_CMIF() 会创建一个临时 fig/cmif
-        fig_cmif_tmp, ax_cmif_tmp = fdd.plot_CMIF(freqlim=(0, 8))
+        fig_fdd_tmp, ax_fdd_tmp = fdd.plot_CMIF(freqlim=(freq_min, freq_max))
 
-        # （4）复制 CMIF 的线到 ax_fdd
-        for line in ax_cmif_tmp.lines:
+        for line in ax_fdd_tmp.lines:
             x_data = line.get_xdata()
             y_data = line.get_ydata()
-            ax_fdd.plot(
-                x_data, y_data,
-                linestyle=line.get_linestyle(),
-                color=line.get_color(),
-                linewidth=line.get_linewidth(),
-                label=line.get_label()
-            )
-        plt.close(fig_cmif_tmp)  # 用完临时图就关闭
+            ax_fdd.plot(x_data, y_data,
+                        linestyle=line.get_linestyle(),
+                        color=line.get_color(),
+                        linewidth=line.get_linewidth())
+        import matplotlib.pyplot as plt
+        plt.close(fig_fdd_tmp)
 
-        # （5）如果想让 x 范围都显示 0~10Hz，可以：
-        # ax_ssi.set_xlim(0, 10)
-        # ax_fdd.set_xlim(0, 10)
-
-        # （6）在嵌入 Tkinter 前，如果老的 canvas 存在，先销毁
+        # 把旧画布先删掉
         if self.canvas_oma:
             self.canvas_oma.get_tk_widget().destroy()
-            self.canvas_oma = None
 
-        # （7）将“PyOMA2 画好的 fig_ssi”嵌入到 tkinter
-        self.fig_oma = fig_ssi    # 保存引用，以便后续保存
-        self.canvas_oma = FigureCanvasTkAgg(self.fig_oma, master=self.oma_plot_frame)
-        self.canvas_oma.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.fig_oma = fig_ssi
+        # 注意：此处要和 create_oma_widgets() 里的那个 plot_frame 统一。
+        # 最好在 create_oma_widgets() 中保留对 plot_frame 的引用，比如 self.oma_plot_frame = plot_frame
+        # 然后这里用 master=self.oma_plot_frame 即可
 
-        # （8）如果需要 mplcursors 交互，可启用：
-        # import mplcursors
-        # mplcursors.cursor(ax_ssi, hover=True)
-        # mplcursors.cursor(ax_fdd, hover=True)
+        self.canvas_oma = FigureCanvasTkAgg(self.fig_oma, master=self.oma_tab)
+
+        # 不再调用 pack()，而是 grid()
+        self.canvas_oma.get_tk_widget().grid(row=0, column=0, sticky="nsew")  # 也可以放到同一个 plot_frame
 
         self.canvas_oma.draw()
+
+
+
 
     def save_oma_figure(self):
         """
@@ -1271,6 +1437,7 @@ class MainWindow(tk.Tk):
         self.global_params_text.insert(tk.END, msg + "\n")
         self.global_params_text.see(tk.END)
 
+
     def update_visualization_options(self, results):
         """
         同时从 self.controller.sensor_settings + results.files[*]['fft_results']
@@ -1301,17 +1468,17 @@ class MainWindow(tk.Tk):
             self.channel_var_time.set('')
             self.channel_var_frf.set('')
 
-        # --- 4) 更新下拉菜单（频谱/时域/FRF） ---
+        # --- 4) 因为下文要用 self.file_options，这里先更新它
+        # 注意：有些人会先更新 file_options 再去更新频谱/时域FRF的 combobox。
+        #       也可以调整顺序，只要确保 file_options 里的值最终正确。
+        self.file_options = [file_result['file_name'] for file_result in results.files]
+
+        # --- 5) 更新 频谱/时域/FRF 这三处的下拉菜单 ---
         self.file_menu_spectrum['values'] = self.file_options
         self.file_menu_time['values']     = self.file_options
         self.file_menu_frf['values']      = self.file_options
 
-        self.channel_menu_spectrum['values'] = self.channel_options
-        self.channel_menu_time['values']     = self.channel_options
-        self.channel_menu_frf['values']      = self.channel_options
-
-        # --- 5) 多文件场景下，更新文件选择下拉菜单 ---
-        self.file_options = [file_result['file_name'] for file_result in results.files]
+        # 根据 file_options 是否为空，设定默认选中
         if self.file_options:
             self.file_var_spectrum.set(self.file_options[0])
             self.file_var_time.set(self.file_options[0])
@@ -1321,13 +1488,30 @@ class MainWindow(tk.Tk):
             self.file_var_time.set('')
             self.file_var_frf.set('')
 
+        self.channel_menu_spectrum['values'] = self.channel_options
+        self.channel_menu_time['values']     = self.channel_options
+        self.channel_menu_frf['values']      = self.channel_options
 
+        old_file = self.oma_file_var.get()     # 先记下用户当前选的文件
+        self.file_menu_oma['values'] = self.file_options  # 更新下拉值
 
+        if old_file in self.file_options:
+            # 如果旧文件依然在新的 file_options 里，则用回它
+            self.oma_file_var.set(old_file)
+        elif self.file_options:
+            # 否则才用第一个
+            self.oma_file_var.set(self.file_options[0])
+        else:
+            # 实在没文件就空
+            self.oma_file_var.set('')
 
+        # 再把 channel listbox 清空并插入
+        self.oma_channel_listbox.delete(0, tk.END)
+        for ch in self.channel_options:
+            self.oma_channel_listbox.insert(tk.END, ch)
 
-
-
-
+        # 最后手动触发 on_oma_file_changed() 让它自动恢复之前勾选的通道
+        self.on_oma_file_changed()
 
 
 
