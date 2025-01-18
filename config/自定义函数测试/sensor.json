@@ -1,0 +1,154 @@
+[
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度1x",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度1y",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度1z",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度2x",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度2y",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度2z",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度3x",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度3y",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "加速度",
+        "sensitivity": "1",
+        "name": "加速度3z",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "力环",
+        "sensitivity": "1",
+        "name": "Fx",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "力环",
+        "sensitivity": "1",
+        "name": "Fy",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "力环",
+        "sensitivity": "1",
+        "name": "Fz",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "扭矩传感器",
+        "sensitivity": "1",
+        "name": "Mz",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "空载信号",
+        "sensitivity": "1",
+        "name": "Sp",
+        "a": "",
+        "b": "",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "脉动压力传感器",
+        "sensitivity": "",
+        "name": "脉动压力传感器15",
+        "a": "1",
+        "b": "0",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "脉动压力传感器",
+        "sensitivity": "",
+        "name": "脉动压力传感器16",
+        "a": "1",
+        "b": "0",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "脉动压力传感器",
+        "sensitivity": "",
+        "name": "脉动压力传感器17",
+        "a": "1",
+        "b": "0",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "脉动压力传感器",
+        "sensitivity": "",
+        "name": "脉动压力传感器18",
+        "a": "1",
+        "b": "0",
+        "is_reference": false
+    },
+    {
+        "sensor_type": "脉动压力传感器",
+        "sensitivity": "",
+        "name": "脉动压力传感器19",
+        "a": "1",
+        "b": "0",
+        "is_reference": false
+    }
+]
