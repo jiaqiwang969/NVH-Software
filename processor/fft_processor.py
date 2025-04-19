@@ -135,7 +135,15 @@ class FFTProcessor:
 
     def log_message(self, message):
         # 通过主线程更新日志
-        self.controller.view.after(0, self.logger_insert, message)
+        if self.controller and self.controller.view and self.logger:
+             self.controller.view.after(0, self.logger_insert, message)
+        elif self.logger:
+             # Fallback if view/controller is not available (e.g., testing)
+             self.logger.insert(tk.END, message)
+             self.logger.see(tk.END)
+             self.logger.update()
+        else:
+             print(message) # Final fallback
 
     def logger_insert(self, message):
         self.logger.insert(tk.END, message)
@@ -249,7 +257,6 @@ class FFTProcessor:
 
         return frf_results
 
-
     def process_user_defined_signals(self, user_data, custom_name):
         """
         接收用户自定义的单路时域数据 (user_data)，并执行:
@@ -304,3 +311,44 @@ class FFTProcessor:
             user_frf_result = None
 
         return user_fft_result, user_frf_result
+
+    def calculate_frf_from_data(self, input_data, output_data, fs):
+        """
+        根据输入的时域数据计算频响函数 (FRF)。
+        使用频谱比值法 (H = Gxy / Gxx 的简化，直接用 FFT 比值)
+        
+        返回: 包含 freq, H_f_magnitude, H_f_phase 的字典，或在错误时返回 None
+        """
+        if len(input_data) != len(output_data):
+            self.log_message("错误：计算FRF时输入和输出数据长度不一致！\n")
+            return None
+        
+        N = len(input_data)
+        if N == 0:
+            return None
+            
+        # 计算 FFT
+        fft_input = np.fft.fft(input_data)
+        fft_output = np.fft.fft(output_data)
+        freq = np.fft.fftfreq(N, d=1.0/fs)
+        
+        # 只取正频率部分
+        idx_pos = np.where(freq >= 0)
+        freq = freq[idx_pos]
+        fft_input = fft_input[idx_pos]
+        fft_output = fft_output[idx_pos]
+        
+        # 计算 FRF (频谱比值法) - 注意处理除零
+        # 为避免除零，可以在分母加一个小数，或者只在分母大于某个阈值时计算
+        epsilon = 1e-12 # 避免除零的小数
+        H_f = fft_output / (fft_input + epsilon)
+        
+        H_f_magnitude = np.abs(H_f)
+        H_f_phase = np.angle(H_f)
+        
+        return {
+            'freq': freq,
+            'H_f_magnitude': H_f_magnitude,
+            'H_f_phase': H_f_phase
+            # 'name' is not needed here, will be handled by controller
+        }

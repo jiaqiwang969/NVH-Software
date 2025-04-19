@@ -73,11 +73,15 @@ class MainWindow(tk.Tk):
         self.vk2_filtord_var = tk.StringVar(value="1")
         self.apply_freq_removal_var = tk.BooleanVar()
         # 时域信号变量
+        self.file_var_time = tk.StringVar()
+        self.channel_var_time = tk.StringVar()
         self.time_lower_display_var = tk.StringVar(value="0")
-        self.time_upper_display_var = tk.StringVar(value="1")
+        self.time_upper_display_var = tk.StringVar()  # 初始值留空，在显示时动态设置为总时长
         self.y_axis_auto_scale_var_time = tk.BooleanVar(value=True)
         self.y_axis_min_var_time = tk.StringVar()
         self.y_axis_max_var_time = tk.StringVar()
+        # 新增：用于控制是否将当前时间范围应用于频谱分析
+        self.apply_truncation_to_spectrum_var = tk.BooleanVar(value=False)
         # 频响函数变量
         self.x_axis_log_var_frf = tk.BooleanVar()
         self.y_axis_log_var_frf = tk.BooleanVar()
@@ -109,40 +113,46 @@ class MainWindow(tk.Tk):
         self.processing_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.processing_tab, text='数据处理')
         self.create_processing_widgets()
+        
+        # 时域信号选项卡 (移到频谱之前)
+        self.time_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.time_tab, text='时域信号')
+        self.create_time_widgets()
+        
         # 频谱分析选项卡
         self.spectrum_analysis_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.spectrum_analysis_tab, text='频谱分析')
         self.create_spectrum_analysis_widgets()
-        # 时域信号选项卡
-        self.time_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.time_tab, text='时域信号')
-        self.create_time_widgets()
+        
         # 频响函数选项卡
         self.frf_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.frf_tab, text='频响函数')
         self.create_frf_widgets()
+        
         # 工作模态(OMA)选项卡
         self.oma_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.oma_tab, text='工作模态(OMA)')
         self.create_oma_widgets(self.oma_tab)
+        
         # Global Params 选项卡
         self.global_params_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.global_params_tab, text="Global Params")
         self.create_global_params_widgets()
+        
         # 默认禁用可视化选项卡
         self.disable_visualization_tabs()
 
     def disable_visualization_tabs(self):
-        # 默认禁用可视化选项卡
-        self.notebook.tab(1, state='disabled')  # 频谱分析
-        self.notebook.tab(2, state='disabled')  # 时域信号
+        # 默认禁用可视化选项卡 (注意索引变化)
+        self.notebook.tab(1, state='disabled')  # 时域信号
+        self.notebook.tab(2, state='disabled')  # 频谱分析
         self.notebook.tab(3, state='disabled')  # 频响函数
         self.notebook.tab(4, state='disabled')  # 工作模态(OMA)
 
     def enable_visualization_tabs(self):
-        # 启用可视化选项卡
-        self.notebook.tab(1, state='normal')  # 频谱分析
-        self.notebook.tab(2, state='normal')  # 时域信号
+        # 启用可视化选项卡 (注意索引变化)
+        self.notebook.tab(1, state='normal')  # 时域信号
+        self.notebook.tab(2, state='normal')  # 频谱分析
         self.notebook.tab(3, state='normal')  # 频响函数
         self.notebook.tab(4, state='normal')  # 工作模态(OMA)
 
@@ -176,7 +186,7 @@ class MainWindow(tk.Tk):
         self.user_define_btn = tk.Button(frame, text="用户自定义", state='disabled',
                                          command=self.open_user_define_dialog)
         self.user_define_btn.grid(row=4, column=2, padx=5, pady=10)
-        # （示例把它放在与“开始处理”同一行，也可自行调整 row/column）
+        # （示例把它放在与"开始处理"同一行，也可自行调整 row/column）
 
         # 日志显示
         self.log_text = scrolledtext.ScrolledText(frame, width=70, height=15)
@@ -202,7 +212,7 @@ class MainWindow(tk.Tk):
 
     def enable_user_define_button(self, enabled=True):
         """
-        在处理完成后，允许启用“用户自定义”按钮。
+        在处理完成后，允许启用"用户自定义"按钮。
         """
         if enabled:
             self.user_define_btn.config(state='normal')
@@ -362,7 +372,7 @@ class MainWindow(tk.Tk):
         button_frame.pack(pady=10)
         tk.Button(button_frame, text="绘制", command=self.plot_spectrum_analysis).pack(side=tk.LEFT, padx=5)
         tk.Button(button_frame, text="保存图片", command=self.save_spectrum_analysis_plot).pack(side=tk.LEFT, padx=5)
-        # 添加“保存数据”按钮
+        # 添加"保存数据"按钮
         tk.Button(button_frame, text="保存数据", command=self.save_spectrum_data).pack(side=tk.LEFT, padx=5)
 
         # 在 plot_frame 中添加绘图区域
@@ -378,7 +388,7 @@ class MainWindow(tk.Tk):
 
     def plot_spectrum_analysis(self):
         """
-        当用户点击“绘制”时:
+        当用户点击"绘制"时:
           1) 检查 file, channel
           2) 调用 controller.get_spectrum_data(file, channel) => freq, amplitude
           3) 做图
@@ -477,6 +487,9 @@ class MainWindow(tk.Tk):
         ax.legend(prop=self.font_prop)
         ax.grid()
 
+        # 设置x轴范围为用户设置的频率范围
+        ax.set_xlim(freq_lower_display, freq_upper_display)
+
         if x_axis_log:
             ax.set_xscale('log')
         if y_axis_scale_log:
@@ -525,8 +538,14 @@ class MainWindow(tk.Tk):
         self.canvas_spectrum_analysis.draw()
 
     def save_spectrum_analysis_plot(self):
+        selected_file = self.file_var_spectrum.get()
+        selected_channel = self.channel_var_spectrum.get()
+        # 使用文件名+传感器名作为默认文件名
+        default_filename = f"{selected_file}_{selected_channel}.png" if selected_file and selected_channel else ""
+        
         file_path = filedialog.asksaveasfilename(title="保存图片", defaultextension=".png",
-                                                 filetypes=[("PNG 文件", "*.png"), ("JPEG 文件", "*.jpg"), ("所有文件", "*.*")])
+                                                 filetypes=[("PNG 文件", "*.png"), ("JPEG 文件", "*.jpg"), ("所有文件", "*.*")],
+                                                 initialfile=default_filename)
         if file_path:
             self.figure_spectrum_analysis.savefig(file_path)
             messagebox.showinfo("成功", "图片已保存！")
@@ -536,9 +555,15 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "没有可保存的数据，请先绘制频谱。")
             return
 
+        selected_file = self.file_var_spectrum.get()
+        selected_channel = self.channel_var_spectrum.get()
+        # 使用文件名+传感器名作为默认文件名
+        default_filename = f"{selected_file}_{selected_channel}.txt" if selected_file and selected_channel else ""
+        
         # 让用户选择保存文件的位置
         file_path = filedialog.asksaveasfilename(title="保存数据", defaultextension=".txt",
-                                                 filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")])
+                                                 filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+                                                 initialfile=default_filename)
         if file_path:
             try:
                 # 将频率和幅值数据保存到文本文件
@@ -590,15 +615,22 @@ class MainWindow(tk.Tk):
         self.channel_menu_time.pack(anchor=tk.W, padx=5, pady=5)
 
         # 时域显示范围
-        tk.Label(control_frame, text="时间显示范围 (0-1):").pack(anchor=tk.W, padx=5, pady=5)
+        tk.Label(control_frame, text="时间显示范围 (秒):").pack(anchor=tk.W, padx=5, pady=5)
         time_display_frame = tk.Frame(control_frame)
         time_display_frame.pack(anchor=tk.W, padx=5, pady=5)
         tk.Entry(time_display_frame, textvariable=self.time_lower_display_var, width=10).pack(side=tk.LEFT)
         tk.Label(time_display_frame, text=" - ").pack(side=tk.LEFT)
         tk.Entry(time_display_frame, textvariable=self.time_upper_display_var, width=10).pack(side=tk.LEFT)
 
-        # Y轴范围
-        tk.Label(control_frame, text="Y轴范围:").pack(anchor=tk.W, padx=5, pady=5)
+        # 恢复/添加 时域信号截断按钮 (注意调整布局，避免与下方复选框重叠)
+        truncate_button_frame = tk.Frame(control_frame) # 使用单独的Frame
+        truncate_button_frame.pack(anchor=tk.W, padx=5, pady=2) # 调整pady
+        tk.Button(truncate_button_frame, text="截断并生成新分析结果", 
+                  command=self.truncate_signal).pack(side=tk.LEFT, padx=0)
+        # 可选：添加简短说明
+        # tk.Label(truncate_button_frame, text="(基于上方时间范围)").pack(side=tk.LEFT, padx=5)
+
+        # Y轴范围 Frame
         y_range_frame = tk.Frame(control_frame)
         y_range_frame.pack(anchor=tk.W, padx=5, pady=5)
         tk.Checkbutton(y_range_frame, text="自动缩放", variable=self.y_axis_auto_scale_var_time).pack(side=tk.LEFT)
@@ -606,6 +638,13 @@ class MainWindow(tk.Tk):
         tk.Entry(y_range_frame, textvariable=self.y_axis_min_var_time, width=10).pack(side=tk.LEFT)
         tk.Label(y_range_frame, text="最大值:").pack(side=tk.LEFT)
         tk.Entry(y_range_frame, textvariable=self.y_axis_max_var_time, width=10).pack(side=tk.LEFT)
+
+        # 应用时间范围到后续分析的控件 (动态过滤)
+        spectrum_apply_frame = tk.Frame(control_frame)
+        spectrum_apply_frame.pack(anchor=tk.W, padx=5, pady=5)
+        tk.Checkbutton(spectrum_apply_frame, text="将此时间范围用于后续分析 (频谱/OMA)", # 修改标签文本
+                       variable=self.apply_truncation_to_spectrum_var,
+                       command=self.toggle_spectrum_truncation).pack(side=tk.LEFT)
 
         # 绘制按钮和保存按钮
         button_frame = tk.Frame(control_frame)
@@ -631,21 +670,33 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "未找到对应的通道数据！")
             return
 
-        try:
-            time_start = float(self.time_lower_display_var.get())
-            time_end = float(self.time_upper_display_var.get())
-            if not (0 <= time_start < time_end <= 1):
-                messagebox.showwarning("警告", "时域信号范围应在 0 到 1 之间，且起始值小于结束值！")
-                return
-        except ValueError:
-            messagebox.showwarning("警告", "时域信号范围必须是数字！")
-            return
-
+        # 计算时间向量和总时长
         sampling_rate = float(self.controller.params.sampling_rate) if self.controller.params else 25600
         total_length = len(data_converted)
         t = np.linspace(0, total_length / sampling_rate, total_length, endpoint=False)
-        start_idx = int(time_start * total_length)
-        end_idx = int(time_end * total_length)
+        total_time = total_length / sampling_rate
+        
+        # 如果上限为空或选择了新的文件/通道，则设置为完整时间范围
+        if not self.time_upper_display_var.get() or self.last_plotted_file != selected_file or self.last_plotted_channel != selected_channel:
+            self.time_lower_display_var.set("0")
+            self.time_upper_display_var.set(f"{total_time:.4f}")
+            # 记录当前显示的文件和通道
+            self.last_plotted_file = selected_file
+            self.last_plotted_channel = selected_channel
+
+        try:
+            time_start = float(self.time_lower_display_var.get())
+            time_end = float(self.time_upper_display_var.get())
+            if not (0 <= time_start < time_end <= total_time):
+                messagebox.showwarning("警告", f"时间范围应在 0 到 {total_time:.4f} 秒之间，且起始值小于结束值！")
+                return
+        except ValueError:
+            messagebox.showwarning("警告", "时间范围必须是数字！")
+            return
+
+        # 根据实际时间值计算索引
+        start_idx = int(time_start * sampling_rate)
+        end_idx = min(int(time_end * sampling_rate) + 1, total_length)
         t_segment = t[start_idx:end_idx]
         data_segment = data_converted[start_idx:end_idx]
 
@@ -659,6 +710,11 @@ class MainWindow(tk.Tk):
         ax.set_ylabel("幅值", fontproperties=self.font_prop)
         ax.legend(prop=self.font_prop)
         ax.grid()
+
+        # 设置x轴范围为用户设置的时间范围
+        time_absolute_start = t[start_idx]
+        time_absolute_end = t[end_idx-1]
+        ax.set_xlim(time_absolute_start, time_absolute_end)
 
         # Y 轴自动缩放 vs 手动设置
         y_axis_auto_scale = self.y_axis_auto_scale_var_time.get()
@@ -706,11 +762,101 @@ class MainWindow(tk.Tk):
         self.canvas_time.draw()
 
     def save_time_plot(self):
+        selected_file = self.file_var_time.get()
+        selected_channel = self.channel_var_time.get()
+        # 使用文件名+传感器名作为默认文件名
+        default_filename = f"{selected_file}_{selected_channel}.png" if selected_file and selected_channel else ""
+        
         file_path = filedialog.asksaveasfilename(title="保存图片", defaultextension=".png",
-                                                 filetypes=[("PNG 文件", "*.png"), ("JPEG 文件", "*.jpg"), ("所有文件", "*.*")])
+                                                 filetypes=[("PNG 文件", "*.png"), ("JPEG 文件", "*.jpg"), ("所有文件", "*.*")],
+                                                 initialfile=default_filename)
         if file_path:
             self.figure_time.savefig(file_path)
             messagebox.showinfo("成功", "图片已保存！")
+            
+    def truncate_signal(self):
+        """
+        截断当前选择的文件的所有通道信号，调用Controller生成新的分析结果集。
+        """
+        selected_file = self.file_var_time.get()
+        # 不再需要获取 selected_channel
+        # selected_channel = self.channel_var_time.get()
+        
+        if not selected_file:
+            messagebox.showwarning("警告", "请选择文件！")
+            return
+            
+        # 获取任一通道数据以验证时间范围 (或在Controller中验证)
+        # 为了简化View层逻辑，主要验证交给Controller
+        # data_converted = self.controller.get_time_domain_data(selected_file, ???) # 不易获取
+            
+        try:
+            time_start = float(self.time_lower_display_var.get())
+            time_end = float(self.time_upper_display_var.get())
+            # 基本范围检查 (更严格的基于总时长的检查移至Controller)
+            if time_start < 0 or time_end <= time_start:
+                 raise ValueError("时间范围无效 (起始<0 或 结束<=起始)")
+        except ValueError:
+            messagebox.showwarning("警告", "时间范围必须是有效的数字！")
+            return
+            
+        # 弹出确认对话框 - 针对整个文件
+        if not messagebox.askyesno("确认", f"确定要截取文件 '{selected_file}' 的所有通道 {time_start:.4f}s - {time_end:.4f}s 的数据，并生成新的分析结果吗？"):
+            return
+            
+        # 调用controller进行文件截断和重新处理
+        new_file_name = self.controller.process_truncated_file_segment(selected_file, time_start, time_end)
+        
+        if new_file_name:
+            messagebox.showinfo("成功", f"已成功生成基于文件截断信号的分析结果！\n新文件名: {new_file_name}\n请在文件下拉框中选择它进行查看。")
+        else:
+            messagebox.showerror("错误", "生成截断文件分析结果失败！请查看日志获取详情。")
+
+    # 新增：处理频谱截断 Checkbutton 状态变化的方法
+    def toggle_spectrum_truncation(self):
+        selected_file = self.file_var_time.get()
+        # selected_channel is not strictly needed for the key anymore, but keep for context/validation
+        selected_channel = self.channel_var_time.get() 
+        apply_truncation = self.apply_truncation_to_spectrum_var.get()
+        
+        if not selected_file:
+            # 只需检查文件
+            self.apply_truncation_to_spectrum_var.set(False)
+            messagebox.showwarning("警告", "请先选择文件！")
+            return
+            
+        if apply_truncation:
+            # 如果选中，尝试设置截断范围
+            try:
+                # 验证并获取时间范围
+                time_start_str = self.time_lower_display_var.get()
+                time_end_str = self.time_upper_display_var.get()
+                if not time_start_str or not time_end_str:
+                     raise ValueError("时间范围不能为空")
+                time_start = float(time_start_str)
+                time_end = float(time_end_str)
+                
+                # 简单的本地验证
+                if time_start >= time_end or time_start < 0:
+                    raise ValueError("无效的时间范围 (起始>=结束 或 起始<0)")
+
+                # 调用controller设置范围 (现在是按文件设置)
+                success = self.controller.set_analysis_truncation_range(selected_file, time_start, time_end)
+                
+                if not success:
+                     # 如果controller验证失败（例如超出总时长），恢复checkbox
+                     self.apply_truncation_to_spectrum_var.set(False)
+                     # Controller内部应该已经log了错误信息
+                     # messagebox.showwarning(...) # 可选：在View层再次提示
+
+            except ValueError as e:
+                messagebox.showwarning("警告", f"无效的时间范围: {e}\n请先在上方设置有效的时间范围（秒）。")
+                # 如果设置失败，恢复为未选中状态
+                self.apply_truncation_to_spectrum_var.set(False)
+        else:
+            # 如果取消选中，则清除截断范围 (按文件清除)
+            self.controller.clear_analysis_truncation_range(selected_file)
+            # Controller内部已经log了清除信息
 
     # ====== 频响函数相关方法 ======
     def create_frf_widgets(self):
@@ -897,6 +1043,9 @@ class MainWindow(tk.Tk):
         ax.legend(prop=self.font_prop)
         ax.grid()
 
+        # 设置x轴范围为用户设置的频率范围
+        ax.set_xlim(freq_lower_display, freq_upper_display)
+
         if x_axis_log:
             ax.set_xscale('log')
         if y_axis_scale_log:
@@ -945,8 +1094,14 @@ class MainWindow(tk.Tk):
         self.canvas_frf.draw()
 
     def save_frf_plot(self):
+        selected_file = self.file_var_frf.get()
+        selected_channel = self.channel_var_frf.get()
+        # 使用文件名+传感器名作为默认文件名
+        default_filename = f"{selected_file}_{selected_channel}.png" if selected_file and selected_channel else ""
+        
         file_path = filedialog.asksaveasfilename(title="保存图片", defaultextension=".png",
-                                                 filetypes=[("PNG 文件", "*.png"), ("JPEG 文件", "*.jpg"), ("所有文件", "*.*")])
+                                                 filetypes=[("PNG 文件", "*.png"), ("JPEG 文件", "*.jpg"), ("所有文件", "*.*")],
+                                                 initialfile=default_filename)
         if file_path:
             self.figure_frf.savefig(file_path)
             messagebox.showinfo("成功", "图片已保存！")
@@ -992,7 +1147,7 @@ class MainWindow(tk.Tk):
         )
         self.file_menu_oma.pack(anchor=tk.W, padx=5, pady=2)
 
-        # 绑定事件：当用户切换“选择文件”下拉时，调用 on_oma_file_changed
+        # 绑定事件：当用户切换"选择文件"下拉时，调用 on_oma_file_changed
         self.file_menu_oma.bind("<<ComboboxSelected>>", self.on_oma_file_changed)
 
         # ========== 2) 多选通道 =============
@@ -1073,6 +1228,31 @@ class MainWindow(tk.Tk):
         # 画图
         self.canvas_oma.draw()
 
+
+
+
+    def save_oma_figure(self):
+        """
+        保存一次性绘制好的 OMA 图 (SSI+FDD)。
+        """
+        if not self.fig_oma:
+            messagebox.showwarning("警告", "还没有绘制 OMA 图，无法保存！")
+            return
+            
+        selected_file = self.oma_file_var.get()
+        # 使用文件名作为默认文件名（OMA是多通道分析）
+        default_filename = f"{selected_file}_OMA.png" if selected_file else ""
+
+        file_path = filedialog.asksaveasfilename(
+            title="保存 OMA 图",
+            defaultextension=".png",
+            filetypes=[("PNG 文件", "*.png"), ("PDF 文件", "*.pdf"), ("所有文件", "*.*")],
+            initialfile=default_filename
+        )
+        if file_path:
+            self.fig_oma.savefig(file_path, dpi=300)
+            messagebox.showinfo("提示", f"已保存 OMA 图到：{file_path}")
+
     def on_oma_channel_changed(self, event=None):
         """
         当用户在 OMA 多选通道的 listbox 中做了选择变更，就更新 self.last_oma_channels_for_file
@@ -1134,34 +1314,8 @@ class MainWindow(tk.Tk):
 
 
 
-
-
-    def select_oma_channels(self):
-        dlg = OmaParamDialog(self)
-        self.wait_window(dlg)
-        if not dlg.selected_channels:
-            return  # 用户取消或没选通道
-        if not dlg.selected_file:
-            return  # 用户没选文件或对话框逻辑
-        # 把收集到的值存起来
-        self.oma_file = dlg.selected_file
-        self.oma_channels = dlg.selected_channels
-        self.oma_params = {
-            "ordmax": dlg.ordmax,
-            "br": dlg.br,
-            "nxseg": dlg.nxseg,
-            "method_SD": dlg.method_SD,
-            "decimate_q": dlg.decimate_q
-        }
-        messagebox.showinfo("提示", 
-            f"已选择文件: {self.oma_file}\n"
-            f"通道: {self.oma_channels}\n"
-            f"OMA参数: {self.oma_params}"
-        )
-
-
     def plot_oma_combined(self):
-        # 1) 读取“文件”与“多选通道”
+        # 1) 读取"文件"与"多选通道"
         file_name = self.oma_file_var.get()
         if not file_name:
             messagebox.showwarning("警告", "请选择要做 OMA 的文件！")
@@ -1251,33 +1405,6 @@ class MainWindow(tk.Tk):
 
 
 
-    def save_oma_figure(self):
-        """
-        保存一次性绘制好的 OMA 图 (SSI+FDD)。
-        """
-        if not self.fig_oma:
-            messagebox.showwarning("警告", "还没有绘制 OMA 图，无法保存！")
-            return
-
-        file_path = filedialog.asksaveasfilename(
-            title="保存 OMA 图",
-            defaultextension=".png",
-            filetypes=[("PNG 文件", "*.png"), ("PDF 文件", "*.pdf"), ("所有文件", "*.*")]
-        )
-        if file_path:
-            self.fig_oma.savefig(file_path, dpi=300)
-            messagebox.showinfo("提示", f"已保存 OMA 图到：{file_path}")
-
-
-
-
-
-
-
-
-
-
-
     # ====== Global Params 相关方法 ======
     def create_global_params_widgets(self):
         """
@@ -1290,7 +1417,7 @@ class MainWindow(tk.Tk):
         file_list = self._get_file_list()
         ch_list   = self._get_channel_list()
 
-        # 在列表前面插入一个 "ALL_FILES"/"ALL_CHANNELS" 选项，代表“全局”或“不区分通道”
+        # 在列表前面插入一个 "ALL_FILES"/"ALL_CHANNELS" 选项，代表"全局"或"不区分通道"
         file_options = ["ALL_FILES"] + file_list
         channel_options = ["ALL_CHANNELS"] + ch_list
 
@@ -1331,7 +1458,7 @@ class MainWindow(tk.Tk):
     def refresh_global_params_tab(self):
         """
         当文件处理完成、通道更新后，主动调用此方法，
-        以更新“Global Params” Tab 上的文件下拉框、通道下拉框，避免重启软件。
+        以更新"Global Params" Tab 上的文件下拉框、通道下拉框，避免重启软件。
         """
         file_list = self._get_file_list()
         ch_list = self._get_channel_list()
@@ -1356,7 +1483,7 @@ class MainWindow(tk.Tk):
 
     def _get_file_list(self):
         """
-        从实际处理结果中收集“文件名”列表，若无 processing_results 或未处理，则返回空列表。
+        从实际处理结果中收集"文件名"列表，若无 processing_results 或未处理，则返回空列表。
         """
         file_list = []
         if self.controller.processing_results:
@@ -1444,7 +1571,7 @@ class MainWindow(tk.Tk):
         中收集所有通道名称，用于多文件场景下也能显示新通道（自定义信号）。
         还负责更新文件名下拉菜单。
         """
-        # --- 1) 收集所有“硬件传感器”名称 ---
+        # --- 1) 收集所有"硬件传感器"名称 ---
         sensor_names = [s.name for s in self.controller.sensor_settings]
 
         # --- 2) 遍历多文件，收集在 fft_results 中出现的所有通道名（包括自定义信号） ---
