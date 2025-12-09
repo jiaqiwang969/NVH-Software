@@ -9,15 +9,9 @@ def main():
     dotenv_path = find_dotenv()
     if dotenv_path:
         load_dotenv(dotenv_path)
-        print(f"Loaded .env from: {dotenv_path}")
-    else:
-        print("[警告] 未找到 .env 文件；若需要 AI 接口请自行检查！")
+    # 不打印 API 密钥，避免泄露
 
-    # 2) 例如也可在此查看 env 变量 (调试)
-    print("OPENAI_API_KEY =", os.environ.get("OPENAI_API_KEY"))
-    print("ANTHROPIC_API_KEY =", os.environ.get("ANTHROPIC_API_KEY"))
-
-    # 3) 之后初始化 AppController 并启动
+    # 2) 之后初始化 AppController 并启动
     app = AppController()
     app.run()
 

@@ -34,10 +34,43 @@ class MainWindow(tk.Tk):
         self.controller = controller
         self.last_oma_channels_for_file = {}
         self.title("FFT 数据处理")
-        try:
-            self.font_prop = FontProperties(fname='SimHei.ttf')  # 确保字体文件存在
-        except:
-            self.font_prop = None  # 使用默认字体
+        # 尝试加载中文字体，按优先级尝试多个字体
+        self.font_prop = None
+        # macOS 常见中文字体
+        font_candidates = [
+            'SimHei.ttf',
+            '/System/Library/Fonts/PingFang.ttc',
+            '/System/Library/Fonts/STHeiti Light.ttc',
+            '/System/Library/Fonts/Hiragino Sans GB.ttc',
+            # Linux 常见中文字体
+            '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+            '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+            # Windows 常见中文字体
+            'C:/Windows/Fonts/simhei.ttf',
+            'C:/Windows/Fonts/msyh.ttc',
+        ]
+        for font_path in font_candidates:
+            try:
+                self.font_prop = FontProperties(fname=font_path)
+                break
+            except:
+                continue
+
+        # 如果都失败，尝试使用 matplotlib 的字体查找
+        if self.font_prop is None:
+            try:
+                import matplotlib.font_manager as fm
+                # 尝试查找系统中的中文字体
+                for font_name in ['PingFang SC', 'Heiti SC', 'STHeiti', 'SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei']:
+                    font_list = fm.findSystemFonts()
+                    for f in font_list:
+                        if font_name.lower().replace(' ', '') in f.lower().replace(' ', ''):
+                            self.font_prop = FontProperties(fname=f)
+                            break
+                    if self.font_prop:
+                        break
+            except:
+                pass
 
         # 初始化变量
         self.init_variables()
