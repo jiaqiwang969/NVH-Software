@@ -134,6 +134,10 @@ class MainWindow(tk.Tk):
         self.file_var_frf = tk.StringVar()
         self.file_options = []
 
+        # 用于防止同步回调无限循环的标志
+        self._syncing_file = False
+        self._syncing_channel = False
+
     # ====== 用户设置的加载/保存（路径、采样率等） ======
     def load_user_settings(self):
         """
@@ -186,6 +190,77 @@ class MainWindow(tk.Tk):
             self.save_user_settings()
         finally:
             self.destroy()
+
+    # ====== 文件/通道选择同步 ======
+    def _sync_file_selection(self, source):
+        """
+        当某个 tab 的文件选择变化时，同步到其他 tab。
+        source: 'spectrum', 'time', 或 'frf'
+        """
+        if self._syncing_file:
+            return
+        self._syncing_file = True
+        try:
+            if source == 'spectrum':
+                value = self.file_var_spectrum.get()
+            elif source == 'time':
+                value = self.file_var_time.get()
+            else:  # frf
+                value = self.file_var_frf.get()
+
+            # 同步到其他两个 tab
+            if source != 'spectrum':
+                self.file_var_spectrum.set(value)
+            if source != 'time':
+                self.file_var_time.set(value)
+            if source != 'frf':
+                self.file_var_frf.set(value)
+        finally:
+            self._syncing_file = False
+
+    def _sync_channel_selection(self, source):
+        """
+        当某个 tab 的通道选择变化时，同步到其他 tab。
+        source: 'spectrum', 'time', 或 'frf'
+        """
+        if self._syncing_channel:
+            return
+        self._syncing_channel = True
+        try:
+            if source == 'spectrum':
+                value = self.channel_var_spectrum.get()
+            elif source == 'time':
+                value = self.channel_var_time.get()
+            else:  # frf
+                value = self.channel_var_frf.get()
+
+            # 同步到其他两个 tab
+            if source != 'spectrum':
+                self.channel_var_spectrum.set(value)
+            if source != 'time':
+                self.channel_var_time.set(value)
+            if source != 'frf':
+                self.channel_var_frf.set(value)
+        finally:
+            self._syncing_channel = False
+
+    def _on_file_selected_spectrum(self, event=None):
+        self._sync_file_selection('spectrum')
+
+    def _on_file_selected_time(self, event=None):
+        self._sync_file_selection('time')
+
+    def _on_file_selected_frf(self, event=None):
+        self._sync_file_selection('frf')
+
+    def _on_channel_selected_spectrum(self, event=None):
+        self._sync_channel_selection('spectrum')
+
+    def _on_channel_selected_time(self, event=None):
+        self._sync_channel_selection('time')
+
+    def _on_channel_selected_frf(self, event=None):
+        self._sync_channel_selection('frf')
 
     def create_tabs(self):
         # 数据处理选项卡
@@ -372,11 +447,13 @@ class MainWindow(tk.Tk):
         tk.Label(control_frame, text="选择文件:").pack(anchor=tk.W, padx=5, pady=5)
         self.file_menu_spectrum = ttk.Combobox(control_frame, textvariable=self.file_var_spectrum, values=self.file_options, state='readonly')
         self.file_menu_spectrum.pack(anchor=tk.W, padx=5, pady=5)
+        self.file_menu_spectrum.bind('<<ComboboxSelected>>', self._on_file_selected_spectrum)
 
         # 通道选择
         tk.Label(control_frame, text="选择通道:").pack(anchor=tk.W, padx=5, pady=5)
         self.channel_menu_spectrum = ttk.Combobox(control_frame, textvariable=self.channel_var_spectrum, values=self.channel_options, state='readonly')
         self.channel_menu_spectrum.pack(anchor=tk.W, padx=5, pady=5)
+        self.channel_menu_spectrum.bind('<<ComboboxSelected>>', self._on_channel_selected_spectrum)
 
         # 添加一个复选框，是否应用频率去除
         tk.Checkbutton(control_frame, text="应用频率去除", variable=self.apply_freq_removal_var, command=self.toggle_freq_removal_options).pack(anchor=tk.W, padx=5, pady=5)
@@ -687,11 +764,13 @@ class MainWindow(tk.Tk):
         tk.Label(control_frame, text="选择文件:").pack(anchor=tk.W, padx=5, pady=5)
         self.file_menu_time = ttk.Combobox(control_frame, textvariable=self.file_var_time, values=self.file_options, state='readonly')
         self.file_menu_time.pack(anchor=tk.W, padx=5, pady=5)
+        self.file_menu_time.bind('<<ComboboxSelected>>', self._on_file_selected_time)
 
         # 通道选择
         tk.Label(control_frame, text="选择通道:").pack(anchor=tk.W, padx=5, pady=5)
         self.channel_menu_time = ttk.Combobox(control_frame, textvariable=self.channel_var_time, values=self.channel_options, state='readonly')
         self.channel_menu_time.pack(anchor=tk.W, padx=5, pady=5)
+        self.channel_menu_time.bind('<<ComboboxSelected>>', self._on_channel_selected_time)
 
         # 时域显示范围
         tk.Label(control_frame, text="时间显示范围 (秒):").pack(anchor=tk.W, padx=5, pady=5)
@@ -1325,11 +1404,13 @@ class MainWindow(tk.Tk):
         tk.Label(control_frame, text="选择文件:").pack(anchor=tk.W, padx=5, pady=5)
         self.file_menu_frf = ttk.Combobox(control_frame, textvariable=self.file_var_frf, values=self.file_options, state='readonly')
         self.file_menu_frf.pack(anchor=tk.W, padx=5, pady=5)
+        self.file_menu_frf.bind('<<ComboboxSelected>>', self._on_file_selected_frf)
 
         # 通道选择
         tk.Label(control_frame, text="选择通道:").pack(anchor=tk.W, padx=5, pady=5)
         self.channel_menu_frf = ttk.Combobox(control_frame, textvariable=self.channel_var_frf, values=self.channel_options, state='readonly')
         self.channel_menu_frf.pack(anchor=tk.W, padx=5, pady=5)
+        self.channel_menu_frf.bind('<<ComboboxSelected>>', self._on_channel_selected_frf)
 
         # 频率显示范围
         tk.Label(control_frame, text="频率显示范围 (Hz):").pack(anchor=tk.W, padx=5, pady=5)
