@@ -135,6 +135,7 @@ class MainWindow(tk.Tk):
         self.segment_audio_start_walltime = None
         self.segment_audio_duration = 0.0
         self.segment_audio_update_job = None
+        self.segment_bg = None  # 用于 blitting 的背景缓存
         # 时域信号变量
         # 注意：time_lower/upper_display_var 为“用户当前想看的时间窗口”，
         # 在同一个文件内切换通道时，我们希望保持这个窗口不变，便于对比。
@@ -913,7 +914,7 @@ class MainWindow(tk.Tk):
             self.segment_audio_update_job = None
 
     def start_segment_play_line_timer(self):
-        """启动切分模式播放红线更新定时器"""
+        """启动切分模式播放红线更新定时器（使用 blitting 优化性能）"""
         if self.segment_audio_update_job is not None:
             try:
                 self.after_cancel(self.segment_audio_update_job)
@@ -923,11 +924,15 @@ class MainWindow(tk.Tk):
 
         def _update():
             if not self.segment_audio_is_playing:
-                # 播放结束，隐藏红线
+                # 播放结束，隐藏红线并恢复背景
                 if self.segment_play_line is not None:
                     self.segment_play_line.set_alpha(0.0)
                     try:
-                        self.canvas_spectrum_analysis.draw_idle()
+                        if hasattr(self, 'segment_bg') and self.segment_bg is not None:
+                            self.canvas_spectrum_analysis.restore_region(self.segment_bg)
+                            self.canvas_spectrum_analysis.blit(self.figure_spectrum_analysis.bbox)
+                        else:
+                            self.canvas_spectrum_analysis.draw_idle()
                     except Exception:
                         pass
                 self.segment_audio_update_job = None
@@ -946,9 +951,25 @@ class MainWindow(tk.Tk):
                     (self.segment_audio_end_time - self.segment_audio_start_time) * progress
 
             if self.segment_ax_time is not None and self.segment_play_line is not None:
-                self.segment_play_line.set_xdata([cur_t, cur_t])
-                self.segment_play_line.set_alpha(0.9)
-                self.canvas_spectrum_analysis.draw_idle()
+                try:
+                    # 使用 blitting 快速更新红线
+                    if hasattr(self, 'segment_bg') and self.segment_bg is not None:
+                        # 恢复背景
+                        self.canvas_spectrum_analysis.restore_region(self.segment_bg)
+                        # 更新红线位置
+                        self.segment_play_line.set_xdata([cur_t, cur_t])
+                        self.segment_play_line.set_alpha(0.9)
+                        # 只重绘红线
+                        self.segment_ax_time.draw_artist(self.segment_play_line)
+                        # 更新画布
+                        self.canvas_spectrum_analysis.blit(self.figure_spectrum_analysis.bbox)
+                    else:
+                        # 回退到普通绘制
+                        self.segment_play_line.set_xdata([cur_t, cur_t])
+                        self.segment_play_line.set_alpha(0.9)
+                        self.canvas_spectrum_analysis.draw_idle()
+                except Exception:
+                    pass
 
             if self.segment_audio_is_playing:
                 self.segment_audio_update_job = self.after(30, _update)
@@ -1152,6 +1173,14 @@ class MainWindow(tk.Tk):
 
         # 调整子图间距
         self.figure_spectrum_analysis.tight_layout()
+
+        # 先绘制一次，然后保存背景用于 blitting
+        self.canvas_spectrum_analysis.draw()
+        # 保存背景（用于快速更新红线）
+        if segment_mode and segment_time_data is not None:
+            self.segment_bg = self.canvas_spectrum_analysis.copy_from_bbox(self.figure_spectrum_analysis.bbox)
+        else:
+            self.segment_bg = None
 
         # 添加频率标记
         if add_frequency_markers:
