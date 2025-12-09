@@ -1133,7 +1133,7 @@ class MainWindow(tk.Tk):
             ax = self.figure_spectrum_analysis.add_subplot(111)
             ax_time = None
 
-        ax.plot(freq_to_plot, amplitude_to_plot, label=selected_channel)
+        ax.plot(freq_to_plot, amplitude_to_plot, label=selected_channel, linewidth=0.5, color='steelblue')
         ax.set_title(f"频谱分析 - {selected_channel}{title_suffix}", fontproperties=self.font_prop)
         ax.set_xlabel("频率 (Hz)", fontproperties=self.font_prop)
         ax.set_ylabel(y_label, fontproperties=self.font_prop)
@@ -1404,17 +1404,8 @@ class MainWindow(tk.Tk):
         # 每次重绘时域图时，清空旧的播放指示线引用
         self.time_play_line = None
 
-        # 为了减少大数据量绘图时的卡顿，对显示数据进行适当下采样
-        max_points = 5000  # 屏幕上最多画这么多点，一般已经足够观察趋势
-        if len(t_segment) > max_points:
-            step = max(1, len(t_segment) // max_points)
-            t_plot = t_segment[::step]
-            data_plot = data_segment[::step]
-        else:
-            t_plot = t_segment
-            data_plot = data_segment
-
-        ax.plot(t_plot, data_plot, label=selected_channel)
+        # 直接使用原始数据绘图，使用细线条提高清晰度
+        ax.plot(t_segment, data_segment, label=selected_channel, linewidth=0.5, color='steelblue')
         ax.set_title(f"时域信号 - {selected_channel}", fontproperties=self.font_prop)
         ax.set_xlabel("时间 (s)", fontproperties=self.font_prop)
         ax.set_ylabel("幅值", fontproperties=self.font_prop)
