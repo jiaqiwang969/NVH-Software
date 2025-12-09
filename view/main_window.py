@@ -82,6 +82,15 @@ class MainWindow(tk.Tk):
         self.vk2_r_var = tk.StringVar(value="1000")
         self.vk2_filtord_var = tk.StringVar(value="1")
         self.apply_freq_removal_var = tk.BooleanVar()
+        # 切分分析变量
+        self.segment_mode_var = tk.BooleanVar(value=False)  # 是否启用切分模式
+        self.segment_length_var = tk.StringVar(value="1.0")  # 切分长度（秒）
+        self.segment_overlap_var = tk.StringVar(value="50")  # 重叠率（%）
+        self.segment_window_var = tk.StringVar(value="Hanning")  # 窗函数
+        self.segment_current_idx = 0  # 当前段索引
+        self.segment_total_count = 0  # 总段数
+        self.segment_slider = None  # 滑块控件引用
+        self.segment_info_label = None  # 段信息标签引用
         # 时域信号变量
         # 注意：time_lower/upper_display_var 为“用户当前想看的时间窗口”，
         # 在同一个文件内切换通道时，我们希望保持这个窗口不变，便于对比。
@@ -523,6 +532,60 @@ class MainWindow(tk.Tk):
         tk.Label(freq_marker_frame, text="叶片数:").pack(side=tk.LEFT)
         tk.Entry(freq_marker_frame, textvariable=self.blade_number_var_spectrum, width=10).pack(side=tk.LEFT)
 
+        # ====== 切分分析区域 ======
+        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', padx=5, pady=10)
+        tk.Label(control_frame, text="── 切分分析 ──", font=('TkDefaultFont', 9, 'bold')).pack(anchor=tk.W, padx=5)
+
+        # 启用切分模式复选框
+        tk.Checkbutton(control_frame, text="启用切分模式", variable=self.segment_mode_var,
+                       command=self.toggle_segment_mode).pack(anchor=tk.W, padx=5, pady=2)
+
+        # 切分参数 Frame（可隐藏）
+        self.segment_params_frame = tk.Frame(control_frame)
+
+        # 切分长度
+        seg_len_frame = tk.Frame(self.segment_params_frame)
+        seg_len_frame.pack(anchor=tk.W, padx=5, pady=2)
+        tk.Label(seg_len_frame, text="切分长度(秒):").pack(side=tk.LEFT)
+        tk.Entry(seg_len_frame, textvariable=self.segment_length_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        # 重叠率
+        seg_overlap_frame = tk.Frame(self.segment_params_frame)
+        seg_overlap_frame.pack(anchor=tk.W, padx=5, pady=2)
+        tk.Label(seg_overlap_frame, text="重叠率(%):").pack(side=tk.LEFT)
+        tk.Entry(seg_overlap_frame, textvariable=self.segment_overlap_var, width=8).pack(side=tk.LEFT, padx=5)
+
+        # 窗函数选择
+        seg_window_frame = tk.Frame(self.segment_params_frame)
+        seg_window_frame.pack(anchor=tk.W, padx=5, pady=2)
+        tk.Label(seg_window_frame, text="窗函数:").pack(side=tk.LEFT)
+        window_options = ["Hanning", "Hamming", "Blackman", "矩形", "Flattop"]
+        self.segment_window_menu = ttk.Combobox(seg_window_frame, textvariable=self.segment_window_var,
+                                                 values=window_options, state='readonly', width=10)
+        self.segment_window_menu.pack(side=tk.LEFT, padx=5)
+
+        # 导航控制 Frame
+        nav_frame = tk.Frame(self.segment_params_frame)
+        nav_frame.pack(anchor=tk.W, padx=5, pady=5)
+
+        # 前进/后退按钮和段信息
+        tk.Button(nav_frame, text="◄", width=3, command=self.segment_prev).pack(side=tk.LEFT)
+        self.segment_info_label = tk.Label(nav_frame, text="0 / 0", width=10)
+        self.segment_info_label.pack(side=tk.LEFT, padx=5)
+        tk.Button(nav_frame, text="►", width=3, command=self.segment_next).pack(side=tk.LEFT)
+
+        # 时间范围显示
+        self.segment_time_label = tk.Label(self.segment_params_frame, text="时间: 0.0s - 0.0s")
+        self.segment_time_label.pack(anchor=tk.W, padx=5, pady=2)
+
+        # 滑块
+        self.segment_slider = tk.Scale(self.segment_params_frame, from_=0, to=0, orient=tk.HORIZONTAL,
+                                        length=200, command=self.on_segment_slider_change)
+        self.segment_slider.pack(anchor=tk.W, padx=5, pady=2)
+
+        # 默认隐藏切分参数
+        self.segment_params_frame.pack_forget()
+
         # 绘制按钮和保存按钮
         button_frame = tk.Frame(control_frame)
         button_frame.pack(pady=10)
@@ -542,11 +605,143 @@ class MainWindow(tk.Tk):
         else:
             self.freq_removal_frame.pack_forget()
 
+    # ====== 切分分析相关函数 ======
+    def toggle_segment_mode(self):
+        """切换切分模式的显示/隐藏"""
+        if self.segment_mode_var.get():
+            self.segment_params_frame.pack(anchor=tk.W, padx=5, pady=5)
+        else:
+            self.segment_params_frame.pack_forget()
+
+    def segment_prev(self):
+        """切换到上一段"""
+        if self.segment_current_idx > 0:
+            self.segment_current_idx -= 1
+            self.segment_slider.set(self.segment_current_idx)
+            self.update_segment_info()
+            self.plot_spectrum_analysis()
+
+    def segment_next(self):
+        """切换到下一段"""
+        if self.segment_current_idx < self.segment_total_count - 1:
+            self.segment_current_idx += 1
+            self.segment_slider.set(self.segment_current_idx)
+            self.update_segment_info()
+            self.plot_spectrum_analysis()
+
+    def on_segment_slider_change(self, value):
+        """滑块值改变时的回调"""
+        new_idx = int(float(value))
+        if new_idx != self.segment_current_idx:
+            self.segment_current_idx = new_idx
+            self.update_segment_info()
+            self.plot_spectrum_analysis()
+
+    def update_segment_info(self):
+        """更新段信息显示"""
+        if self.segment_total_count > 0:
+            self.segment_info_label.config(text=f"{self.segment_current_idx + 1} / {self.segment_total_count}")
+            # 计算当前段的时间范围
+            seg_start, seg_end = self.get_segment_time_range(self.segment_current_idx)
+            self.segment_time_label.config(text=f"时间: {seg_start:.2f}s - {seg_end:.2f}s")
+        else:
+            self.segment_info_label.config(text="0 / 0")
+            self.segment_time_label.config(text="时间: 0.0s - 0.0s")
+
+    def get_segment_time_range(self, idx):
+        """获取指定段的时间范围"""
+        try:
+            seg_length = float(self.segment_length_var.get())
+            overlap_pct = float(self.segment_overlap_var.get()) / 100.0
+            step = seg_length * (1 - overlap_pct)
+            start_time = idx * step
+            end_time = start_time + seg_length
+            return start_time, end_time
+        except ValueError:
+            return 0.0, 0.0
+
+    def calculate_segment_count(self, total_duration):
+        """根据总时长和切分参数计算总段数"""
+        try:
+            seg_length = float(self.segment_length_var.get())
+            overlap_pct = float(self.segment_overlap_var.get()) / 100.0
+            if seg_length <= 0:
+                return 0
+            step = seg_length * (1 - overlap_pct)
+            if step <= 0:
+                step = seg_length  # 防止无限段
+            # 计算可以切出多少段
+            count = int((total_duration - seg_length) / step) + 1
+            return max(count, 1) if total_duration >= seg_length else 0
+        except ValueError:
+            return 0
+
+    def get_window_function(self, n):
+        """根据选择返回窗函数数组"""
+        window_name = self.segment_window_var.get()
+        if window_name == "Hanning":
+            return np.hanning(n)
+        elif window_name == "Hamming":
+            return np.hamming(n)
+        elif window_name == "Blackman":
+            return np.blackman(n)
+        elif window_name == "Flattop":
+            # scipy 的 flattop 窗
+            from scipy.signal import windows
+            return windows.flattop(n)
+        else:  # 矩形窗
+            return np.ones(n)
+
+    def compute_segment_spectrum(self, data, sampling_rate, seg_idx):
+        """计算指定段的频谱"""
+        try:
+            seg_length = float(self.segment_length_var.get())
+            overlap_pct = float(self.segment_overlap_var.get()) / 100.0
+        except ValueError:
+            return None, None
+
+        step = seg_length * (1 - overlap_pct)
+        start_time = seg_idx * step
+        end_time = start_time + seg_length
+
+        # 转换为采样点索引
+        start_idx = int(start_time * sampling_rate)
+        end_idx = int(end_time * sampling_rate)
+
+        if start_idx >= len(data) or end_idx > len(data):
+            return None, None
+
+        segment_data = data[start_idx:end_idx]
+        n = len(segment_data)
+        if n == 0:
+            return None, None
+
+        # 应用窗函数
+        window = self.get_window_function(n)
+        windowed_data = segment_data * window
+
+        # 计算 FFT
+        fft_result = np.fft.fft(windowed_data)
+        freq = np.fft.fftfreq(n, 1.0 / sampling_rate)
+
+        # 只取正频率部分
+        positive_mask = freq >= 0
+        freq = freq[positive_mask]
+        amplitude = np.abs(fft_result[positive_mask]) * 2 / n  # 单边幅值
+
+        # 窗函数幅值修正（可选，这里简单补偿）
+        window_sum = np.sum(window)
+        if window_sum > 0:
+            amplitude = amplitude * n / window_sum
+
+        return freq, amplitude
+
     def plot_spectrum_analysis(self):
         """
         当用户点击"绘制"时:
           1) 检查 file, channel
           2) 调用 controller.get_spectrum_data(file, channel) => freq, amplitude
+             或在切分模式下，从时域数据计算切分段的频谱
           3) 做图
         """
         selected_file = self.file_var_spectrum.get()
@@ -559,11 +754,52 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "请选择文件和通道！")
             return
 
-        # 调用 controller 获取 (freq, amplitude)
-        freq, amplitude = self.controller.get_spectrum_data(selected_file, selected_channel)
-        if freq is None or amplitude is None:
-            # 说明获取失败 / 参数不足 / etc
-            return
+        # 判断是否启用切分模式
+        segment_mode = self.segment_mode_var.get()
+        title_suffix = ""  # 用于在标题中显示时间范围
+
+        if segment_mode:
+            # 切分模式：从时域数据计算当前段的频谱
+            time_data = self.controller.get_time_domain_data(selected_file, selected_channel)
+            if time_data is None:
+                messagebox.showwarning("警告", "未找到对应的时域数据！")
+                return
+
+            sampling_rate = float(self.controller.params.sampling_rate) if self.controller.params else 25600.0
+            total_duration = len(time_data) / sampling_rate
+
+            # 计算总段数并更新 UI
+            self.segment_total_count = self.calculate_segment_count(total_duration)
+            if self.segment_total_count == 0:
+                messagebox.showwarning("警告", "切分长度超过数据总时长，无法切分！")
+                return
+
+            # 确保当前索引在有效范围内
+            if self.segment_current_idx >= self.segment_total_count:
+                self.segment_current_idx = self.segment_total_count - 1
+            if self.segment_current_idx < 0:
+                self.segment_current_idx = 0
+
+            # 更新滑块范围
+            self.segment_slider.config(from_=0, to=max(0, self.segment_total_count - 1))
+            self.segment_slider.set(self.segment_current_idx)
+            self.update_segment_info()
+
+            # 计算当前段的频谱
+            freq, amplitude = self.compute_segment_spectrum(time_data, sampling_rate, self.segment_current_idx)
+            if freq is None or amplitude is None:
+                messagebox.showwarning("警告", "计算切分段频谱失败！")
+                return
+
+            # 获取时间范围用于标题
+            seg_start, seg_end = self.get_segment_time_range(self.segment_current_idx)
+            title_suffix = f" [{seg_start:.2f}s - {seg_end:.2f}s]"
+        else:
+            # 非切分模式：使用原有逻辑
+            freq, amplitude = self.controller.get_spectrum_data(selected_file, selected_channel)
+            if freq is None or amplitude is None:
+                # 说明获取失败 / 参数不足 / etc
+                return
 
         # 后续做 freq range 筛选, dB 转换, plot ...
         try:
@@ -637,7 +873,7 @@ class MainWindow(tk.Tk):
         ax = self.figure_spectrum_analysis.add_subplot(111)
 
         ax.plot(freq_to_plot, amplitude_to_plot, label=selected_channel)
-        ax.set_title(f"频谱分析 - {selected_channel}", fontproperties=self.font_prop)
+        ax.set_title(f"频谱分析 - {selected_channel}{title_suffix}", fontproperties=self.font_prop)
         ax.set_xlabel("频率 (Hz)", fontproperties=self.font_prop)
         ax.set_ylabel(y_label, fontproperties=self.font_prop)
         ax.legend(prop=self.font_prop)
