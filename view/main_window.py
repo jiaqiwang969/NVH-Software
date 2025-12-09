@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 from matplotlib.font_manager import FontProperties
+import os
+import json
 
 # ====== 新增：pyoma2 相关导入 ======
 import mplcursors
@@ -15,10 +17,12 @@ from pyoma2.algorithms.fdd import FDD
 from pyoma2.algorithms.ssi import SSIdat
 
 
-
-
 from .dialogs import UserDefineDialog, SensorSettingsDialog, OmaParamDialog
 from model.data_models import SensorSettings
+
+# 用户配置文件路径：放在项目根目录，保存上一次启动时的数据处理主界面的常用参数
+_BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+USER_SETTINGS_FILE = os.path.join(_BASE_DIR, "user_settings.json")
 
 class MainWindow(tk.Tk):
     """
@@ -37,6 +41,9 @@ class MainWindow(tk.Tk):
 
         # 初始化变量
         self.init_variables()
+        # 在创建界面前，尝试加载用户上一次保存的设置（路径、采样率等）
+        self.load_user_settings()
+
         self.canvas_oma = None
         self.fig_oma = None
         # 创建 Notebook
@@ -46,6 +53,9 @@ class MainWindow(tk.Tk):
         # 绑定复制、粘贴快捷键
         self.bind_copy_paste(self)
         self.create_tabs()
+
+        # 拦截窗口关闭事件：先保存用户设置，再正常退出
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def init_variables(self):
         # 数据处理变量
@@ -73,6 +83,8 @@ class MainWindow(tk.Tk):
         self.vk2_filtord_var = tk.StringVar(value="1")
         self.apply_freq_removal_var = tk.BooleanVar()
         # 时域信号变量
+        # 注意：time_lower/upper_display_var 为“用户当前想看的时间窗口”，
+        # 在同一个文件内切换通道时，我们希望保持这个窗口不变，便于对比。
         self.file_var_time = tk.StringVar()
         self.channel_var_time = tk.StringVar()
         self.time_lower_display_var = tk.StringVar(value="0")
@@ -80,6 +92,20 @@ class MainWindow(tk.Tk):
         self.y_axis_auto_scale_var_time = tk.BooleanVar(value=True)
         self.y_axis_min_var_time = tk.StringVar()
         self.y_axis_max_var_time = tk.StringVar()
+        # 记录上一次绘图使用的文件，用于判断是否需要重置时间范围
+        self.last_plotted_file = None
+        # 播放/交互相关状态（时域音频）
+        self.time_audio_is_playing = False
+        self.time_audio_stop_flag = False
+        self.time_audio_thread = None
+        self.time_ax = None                  # 时域主坐标轴引用，用于绘制红线
+        self.time_play_line = None           # 播放指示红线
+        self.time_audio_segment_start_sec = 0.0
+        self.time_audio_segment_end_sec = 0.0
+        self.time_audio_start_walltime = None
+        self.time_audio_duration = 0.0
+        self.time_audio_update_job = None    # Tk after 任务句柄，用于更新播放指示线
+        self.time_motion_cid = None  # mpl_connect 句柄，避免重复绑定导致卡顿
         # 新增：用于控制是否将当前时间范围应用于频谱分析
         self.apply_truncation_to_spectrum_var = tk.BooleanVar(value=False)
         # 频响函数变量
@@ -107,6 +133,59 @@ class MainWindow(tk.Tk):
         self.file_var_time = tk.StringVar()
         self.file_var_frf = tk.StringVar()
         self.file_options = []
+
+    # ====== 用户设置的加载/保存（路径、采样率等） ======
+    def load_user_settings(self):
+        """
+        从 USER_SETTINGS_FILE 读取上次运行时保存的基础参数，
+        目前包含：输入/输出文件夹、文件名前缀、采样率。
+        """
+        if not os.path.exists(USER_SETTINGS_FILE):
+            return
+        try:
+            with open(USER_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            # 读取失败不阻塞启动，只简单提示一次
+            try:
+                messagebox.showwarning("警告", f"读取用户配置失败，将使用默认参数。\n{e}")
+            except Exception:
+                # 在某些环境下 messagebox 还未准备好，直接忽略
+                pass
+            return
+
+        self.input_folder_var.set(data.get("input_folder", ""))
+        self.output_folder_var.set(data.get("output_folder", ""))
+        self.filename_prefix_var.set(data.get("filename_prefix", "激励"))
+        self.sampling_rate_var.set(str(data.get("sampling_rate", "25600")))
+
+    def save_user_settings(self):
+        """
+        将当前基础参数写入 USER_SETTINGS_FILE，供下次启动自动恢复。
+        """
+        data = {
+            "input_folder": self.input_folder_var.get(),
+            "output_folder": self.output_folder_var.get(),
+            "filename_prefix": self.filename_prefix_var.get(),
+            "sampling_rate": self.sampling_rate_var.get(),
+        }
+        try:
+            with open(USER_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            try:
+                messagebox.showwarning("警告", f"保存用户配置失败：{e}")
+            except Exception:
+                pass
+
+    def on_close(self):
+        """
+        关闭主窗口前，先把常用参数持久化到本地文件。
+        """
+        try:
+            self.save_user_settings()
+        finally:
+            self.destroy()
 
     def create_tabs(self):
         # 数据处理选项卡
@@ -646,10 +725,12 @@ class MainWindow(tk.Tk):
                        variable=self.apply_truncation_to_spectrum_var,
                        command=self.toggle_spectrum_truncation).pack(side=tk.LEFT)
 
-        # 绘制按钮和保存按钮
+        # 绘制 / 播放 / 停止 / 保存按钮
         button_frame = tk.Frame(control_frame)
         button_frame.pack(pady=10)
         tk.Button(button_frame, text="绘制", command=self.plot_time_domain).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="播放声音", command=self.play_time_segment_audio).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="停止播放", command=self.stop_time_audio_playback).pack(side=tk.LEFT, padx=5)
         tk.Button(button_frame, text="保存图片", command=self.save_time_plot).pack(side=tk.LEFT, padx=5)
 
         # 在 plot_frame 中添加绘图区域
@@ -664,6 +745,9 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "请选择文件和通道！")
             return
 
+        # 若正在播放上一段音频，先请求停止，避免一边重绘一边播放造成卡顿
+        self.stop_time_audio_playback()
+
         # 获取对应的时域数据
         data_converted = self.controller.get_time_domain_data(selected_file, selected_channel)
         if data_converted is None:
@@ -676,13 +760,13 @@ class MainWindow(tk.Tk):
         t = np.linspace(0, total_length / sampling_rate, total_length, endpoint=False)
         total_time = total_length / sampling_rate
         
-        # 如果上限为空或选择了新的文件/通道，则设置为完整时间范围
-        if not self.time_upper_display_var.get() or self.last_plotted_file != selected_file or self.last_plotted_channel != selected_channel:
+        # 如果上限为空或选择了新的文件，则设置为完整时间范围。
+        # 仅在“文件变化”时重置时间范围；在同一文件内切换通道时保持用户设定，方便对比不同通道。
+        if not self.time_upper_display_var.get() or self.last_plotted_file != selected_file:
             self.time_lower_display_var.set("0")
             self.time_upper_display_var.set(f"{total_time:.4f}")
-            # 记录当前显示的文件和通道
+            # 记录当前显示的文件
             self.last_plotted_file = selected_file
-            self.last_plotted_channel = selected_channel
 
         try:
             time_start = float(self.time_lower_display_var.get())
@@ -702,9 +786,27 @@ class MainWindow(tk.Tk):
 
         # 清除之前的图像
         self.figure_time.clear()
-        ax = self.figure_time.add_subplot(111)
+        # 上方：时域波形；下方：时间-频率分析图（谱图）
+        ax = self.figure_time.add_subplot(211)
+        ax_spec = self.figure_time.add_subplot(212, sharex=ax)
+        self.figure_time.tight_layout()
 
-        ax.plot(t_segment, data_segment, label=selected_channel)
+        # 保存当前坐标轴引用，用于后续绘制播放指示红线
+        self.time_ax = ax
+        # 每次重绘时域图时，清空旧的播放指示线引用
+        self.time_play_line = None
+
+        # 为了减少大数据量绘图时的卡顿，对显示数据进行适当下采样
+        max_points = 5000  # 屏幕上最多画这么多点，一般已经足够观察趋势
+        if len(t_segment) > max_points:
+            step = max(1, len(t_segment) // max_points)
+            t_plot = t_segment[::step]
+            data_plot = data_segment[::step]
+        else:
+            t_plot = t_segment
+            data_plot = data_segment
+
+        ax.plot(t_plot, data_plot, label=selected_channel)
         ax.set_title(f"时域信号 - {selected_channel}", fontproperties=self.font_prop)
         ax.set_xlabel("时间 (s)", fontproperties=self.font_prop)
         ax.set_ylabel("幅值", fontproperties=self.font_prop)
@@ -716,7 +818,7 @@ class MainWindow(tk.Tk):
         time_absolute_end = t[end_idx-1]
         ax.set_xlim(time_absolute_start, time_absolute_end)
 
-        # Y 轴自动缩放 vs 手动设置
+        # Y 轴自动缩放 vs 手动设置（针对上方时域波形）
         y_axis_auto_scale = self.y_axis_auto_scale_var_time.get()
         if y_axis_auto_scale:
             # 让Matplotlib自动计算并缩放
@@ -736,14 +838,123 @@ class MainWindow(tk.Tk):
                 messagebox.showwarning("警告", "Y轴最小值和最大值必须是数字！")
                 return
 
-        # 添加交互式光标
+        # ====== 下方：时间-频率分析图（谱图） ======
+        try:
+            from scipy.signal import spectrogram
+
+            # 选择合适的窗口长度，避免对很长数据导致计算过慢
+            # 经验：nperseg 至少 256，至多 4096，且不超过数据长度
+            default_nperseg = 1024
+            nperseg = min(max(256, default_nperseg), len(data_segment))
+            noverlap = nperseg // 2
+
+            f_spec, t_spec, Sxx = spectrogram(
+                data_segment,
+                fs=sampling_rate,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                scaling="density",
+                mode="magnitude",
+            )
+
+            # 转换为 dB，避免 log(0)
+            Sxx_db = 20 * np.log10(Sxx + 1e-12)
+
+            # --- 降采样谱图维度，避免绘制超大矩阵导致卡顿 ---
+            max_freq_bins = 256
+            max_time_bins = 512
+
+            n_freq, n_time = Sxx_db.shape
+            if n_freq > max_freq_bins:
+                step_f = max(1, n_freq // max_freq_bins)
+                Sxx_db = Sxx_db[::step_f, :]
+                f_spec = f_spec[::step_f]
+                n_freq = Sxx_db.shape[0]
+
+            if n_time > max_time_bins:
+                step_t = max(1, n_time // max_time_bins)
+                Sxx_db = Sxx_db[:, ::step_t]
+                t_spec = t_spec[::step_t]
+                n_time = Sxx_db.shape[1]
+
+            # t_spec 是相对时间，从 0 开始；加上 time_start，变成绝对时间
+            t_spec_abs = t_spec + time_start
+
+            # 使用 imshow 而不是 pcolormesh，把谱图当成一张"图片"绘制，性能更好
+            if n_freq > 0 and n_time > 0:
+                # 频率范围用于设置 extent 和对数坐标
+                f_min_raw = float(f_spec[0])
+                f_max_raw = float(f_spec[-1])
+                # 避免 f_min 为 0
+                f_min = f_min_raw if f_min_raw > 0 else max(1.0, sampling_rate / 1e6)
+                f_max = f_max_raw if f_max_raw > f_min else sampling_rate / 2.0
+
+                extent = [
+                    float(t_spec_abs[0]),
+                    float(t_spec_abs[-1]),
+                    f_min,
+                    f_max,
+                ]
+
+                im = ax_spec.imshow(
+                    Sxx_db,
+                    origin="lower",
+                    aspect="auto",
+                    extent=extent,
+                    cmap="viridis",
+                )
+
+                ax_spec.set_ylabel("频率 (Hz)", fontproperties=self.font_prop)
+                ax_spec.set_xlabel("时间 (s)", fontproperties=self.font_prop)
+
+                # 纵轴使用对数刻度（频率对数变化）
+                ax_spec.set_yscale("log")
+                ax_spec.set_ylim(f_min, f_max)
+                ax_spec.set_xlim(time_absolute_start, time_absolute_end)
+
+                # 添加颜色条，显示幅值（dB），放在下方，保证与时域信号的横坐标对齐
+                cbar = self.figure_time.colorbar(
+                    im,
+                    ax=ax_spec,
+                    orientation="horizontal",
+                    pad=0.15,
+                )
+                cbar.set_label("幅值 (dB)")
+            else:
+                ax_spec.text(
+                    0.5,
+                    0.5,
+                    "谱图数据为空",
+                    ha="center",
+                    va="center",
+                    transform=ax_spec.transAxes,
+                )
+                ax_spec.set_axis_off()
+        except Exception as e:
+            # 谱图计算失败时，不影响上面的时域图
+            ax_spec.text(
+                0.5,
+                0.5,
+                f"谱图计算失败:\n{e}",
+                ha="center",
+                va="center",
+                transform=ax_spec.transAxes,
+            )
+            ax_spec.set_axis_off()
+
+        # 添加交互式光标（仅在上方时域波形上）
         vertical_line = ax.axvline(color='k', linestyle='--', alpha=0.5)
         horizontal_line = ax.axhline(color='k', linestyle='--', alpha=0.5)
+
+        # 创建独立的播放指示红线（不与十字光标共用，避免冲突）
+        play_line = ax.axvline(color='r', linestyle='-', alpha=0.0, linewidth=2)  # 初始透明
+        self.time_play_line = play_line
         annotation = ax.annotate('', xy=(0, 0), xytext=(10, 10), textcoords='offset points',
                                  bbox=dict(boxstyle='round', fc='w'),
                                  fontsize=8, fontproperties=self.font_prop)
 
         def mouse_move(event):
+            # 十字光标与播放红线现在是独立的，无需检查播放状态
             if event.inaxes == ax:
                 x, y = event.xdata, event.ydata
                 vertical_line.set_xdata([x, x])
@@ -758,8 +969,231 @@ class MainWindow(tk.Tk):
                 annotation.set_text('')
                 self.canvas_time.draw_idle()
 
-        self.canvas_time.mpl_connect('motion_notify_event', mouse_move)
+        # 避免重复绑定过多的 motion 事件导致回调堆积，引起卡顿
+        if self.time_motion_cid is not None:
+            try:
+                self.canvas_time.mpl_disconnect(self.time_motion_cid)
+            except Exception:
+                pass
+            self.time_motion_cid = None
+
+        self.time_motion_cid = self.canvas_time.mpl_connect('motion_notify_event', mouse_move)
         self.canvas_time.draw()
+
+    def play_time_segment_audio(self):
+        """
+        根据当前“时间显示范围(秒)”播放该时间段的时域信号。
+        使用后台线程+PyAudio 播放音频本身。目前不再绘制播放红线，专注保证声音流畅。
+        """
+        if self.time_audio_is_playing:
+            messagebox.showinfo("提示", "当前正在播放，请先点击“停止播放”再重新播放。")
+            return
+
+        selected_file = self.file_var_time.get()
+        selected_channel = self.channel_var_time.get()
+        if not selected_file or not selected_channel:
+            messagebox.showwarning("警告", "请选择文件和通道！")
+            return
+
+        # 获取时域数据
+        data_converted = self.controller.get_time_domain_data(selected_file, selected_channel)
+        if data_converted is None:
+            messagebox.showwarning("警告", "未找到对应的通道数据！")
+            return
+
+        # 采样率和总时长
+        sampling_rate = float(self.controller.params.sampling_rate) if self.controller.params else 25600.0
+        total_length = len(data_converted)
+        total_time = total_length / sampling_rate
+
+        # 读取当前设定的时间范围
+        try:
+            time_start = float(self.time_lower_display_var.get())
+            time_end = float(self.time_upper_display_var.get())
+            if not (0 <= time_start < time_end <= total_time):
+                messagebox.showwarning("警告", f"时间范围应在 0 到 {total_time:.4f} 秒之间，且起始值小于结束值！")
+                return
+        except ValueError:
+            messagebox.showwarning("警告", "时间范围必须是数字！")
+            return
+
+        # 根据时间范围截取数据
+        start_idx = int(time_start * sampling_rate)
+        end_idx = min(int(time_end * sampling_rate) + 1, total_length)
+        segment = np.asarray(data_converted[start_idx:end_idx], dtype=np.float32)
+
+        if segment.size < 100:
+            messagebox.showwarning("警告", "选定时间段太短，无法播放！")
+            return
+
+        # 归一化到 [-1, 1]，再转成 float32，避免爆音
+        max_abs = float(np.max(np.abs(segment)))
+        if max_abs <= 0:
+            messagebox.showwarning("警告", "该时间段信号幅值为 0，无法播放！")
+            return
+        segment_norm = np.clip(segment / max_abs, -1.0, 1.0).astype(np.float32)
+
+        # 记录当前播放段信息，供红线更新使用
+        self.time_audio_segment_start_sec = time_start
+        self.time_audio_segment_end_sec = time_end
+        self.time_audio_duration = max(time_end - time_start, 1e-6)
+        self.time_audio_start_walltime = None
+        # 重置播放控制标志
+        self.time_audio_stop_flag = False
+        # 在主线程提前设置播放状态，避免定时器竞态条件
+        self.time_audio_is_playing = True
+
+        import threading
+        import time as _time
+
+        def worker():
+            import pyaudio
+            from scipy.signal import resample
+            p = None
+            stream = None
+            try:
+                # 首先尝试使用原始采样率
+                play_rate = int(sampling_rate)
+                segment_play = segment_norm
+                data_int16 = np.int16(segment_play * 32767)
+
+                p = pyaudio.PyAudio()
+                try:
+                    stream = p.open(format=pyaudio.paInt16,
+                                    channels=1,
+                                    rate=play_rate,
+                                    output=True)
+                except Exception:
+                    # 如果声卡不支持该采样率，则重采样到 44100 Hz 再试
+                    if stream is not None:
+                        stream.close()
+                    if p is not None:
+                        p.terminate()
+                    p = pyaudio.PyAudio()
+                    target_rate = 44100
+                    num_samples = int(len(segment_norm) * target_rate / sampling_rate)
+                    if num_samples <= 0:
+                        raise ValueError("重采样后的长度无效")
+                    segment_play = resample(segment_norm, num_samples).astype(np.float32)
+                    data_int16 = np.int16(segment_play * 32767)
+                    play_rate = target_rate
+                    stream = p.open(format=pyaudio.paInt16,
+                                    channels=1,
+                                    rate=play_rate,
+                                    output=True)
+
+                # 记录 wall-clock 起始时间（在实际开始播放前）
+                self.time_audio_start_walltime = _time.perf_counter()
+
+                total_samples = len(data_int16)
+                if total_samples <= 0:
+                    return
+                # 仅用于音频缓冲的 chunk
+                chunk = 4096
+                idx = 0
+                while idx < total_samples and not self.time_audio_stop_flag:
+                    end = min(idx + chunk, total_samples)
+                    chunk_bytes = data_int16[idx:end].tobytes()
+                    stream.write(chunk_bytes)
+                    idx = end
+
+                # 播放结束后不强制清除光标，保留在最后位置
+            except Exception as e:
+                err_msg = f"播放音频失败：{e}"
+                self.after(0, lambda: messagebox.showerror("错误", err_msg))
+            finally:
+                if stream is not None:
+                    try:
+                        stream.stop_stream()
+                        stream.close()
+                    except Exception:
+                        pass
+                if p is not None:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                self.time_audio_is_playing = False
+                self.time_audio_stop_flag = False
+
+        # 启动后台线程播放
+        self.time_audio_thread = threading.Thread(target=worker, daemon=True)
+        self.time_audio_thread.start()
+
+        # 启动 UI 定时器，用于根据时间更新播放红线
+        self.start_time_play_line_timer()
+
+    def stop_time_audio_playback(self):
+        """停止当前的时域音频播放。"""
+        if self.time_audio_is_playing:
+            self.time_audio_stop_flag = True
+        # 停止红线定时器
+        if self.time_audio_update_job is not None:
+            try:
+                self.after_cancel(self.time_audio_update_job)
+            except Exception:
+                pass
+            self.time_audio_update_job = None
+
+    def start_time_play_line_timer(self):
+        """
+        使用 Tk 的定时器，根据 wall-clock 时间更新时域图上的播放指示红线。
+        为了简单可靠，这里使用整图重绘（draw_idle），音频播放由后台线程完成，
+        不会被绘图阻塞。
+        """
+        # 若有旧的定时任务，先取消
+        if self.time_audio_update_job is not None:
+            try:
+                self.after_cancel(self.time_audio_update_job)
+            except Exception:
+                pass
+            self.time_audio_update_job = None
+
+        def _update():
+            # 播放已结束或被停止
+            if not self.time_audio_is_playing:
+                # 播放结束，隐藏红线
+                if self.time_play_line is not None:
+                    self.time_play_line.set_alpha(0.0)
+                    try:
+                        self.canvas_time.draw_idle()
+                    except Exception:
+                        pass
+                self.time_audio_update_job = None
+                return
+
+            # 尚未拿到播放开始时间，稍后再试
+            if self.time_audio_start_walltime is None:
+                self.time_audio_update_job = self.after(30, _update)
+                return
+
+            import time as _time
+            elapsed = _time.perf_counter() - self.time_audio_start_walltime
+            duration = max(self.time_audio_duration, 1e-6)
+            progress = min(max(elapsed / duration, 0.0), 1.0)
+
+            cur_t = self.time_audio_segment_start_sec + \
+                    (self.time_audio_segment_end_sec - self.time_audio_segment_start_sec) * progress
+
+            # 在上方时域轴上绘制/更新红线
+            if self.time_ax is not None and self.time_play_line is not None:
+                # 更新独立的播放红线位置和样式
+                self.time_play_line.set_xdata([cur_t, cur_t])
+                self.time_play_line.set_alpha(0.9)  # 显示红线
+
+                # 简单整图重绘（非阻塞），主线程自己调度
+                self.canvas_time.draw_idle()
+
+            # 若还在播放，则继续下一次更新
+            if self.time_audio_is_playing:
+                self.time_audio_update_job = self.after(30, _update)
+            else:
+                self.time_audio_update_job = None
+
+        # 启动首次更新
+        self.time_audio_update_job = self.after(30, _update)
+
+
 
     def save_time_plot(self):
         selected_file = self.file_var_time.get()
@@ -1669,4 +2103,3 @@ class MainWindow(tk.Tk):
     # 这些方法已经在 controller/app_controller.py 中实现，通过调用 refresh_fdd_plot 和 refresh_ssi_plot
 
     # ====== 方法结束 ======
-
