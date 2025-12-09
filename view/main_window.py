@@ -148,6 +148,13 @@ class MainWindow(tk.Tk):
         self.y_axis_max_var_time = tk.StringVar()
         # 记录上一次绘图使用的文件，用于判断是否需要重置时间范围
         self.last_plotted_file = None
+        # 时频图类型选择：STFT 或 小波变换
+        self.time_freq_type_var = tk.StringVar(value="STFT")
+        # 时域特征指标选择
+        self.time_feature_type_var = tk.StringVar(value="峭度")
+        # 增强包络的带通滤波范围
+        self.envelope_bandpass_low_var = tk.StringVar(value="500")
+        self.envelope_bandpass_high_var = tk.StringVar(value="5000")
         # 播放/交互相关状态（时域音频）
         self.time_audio_is_playing = False
         self.time_audio_stop_flag = False
@@ -316,6 +323,14 @@ class MainWindow(tk.Tk):
 
     def _on_channel_selected_frf(self, event=None):
         self._sync_channel_selection('frf')
+
+    def _on_feature_type_changed(self, event=None):
+        """当时域特征类型改变时，显示/隐藏带通滤波范围输入框"""
+        feature_type = self.time_feature_type_var.get()
+        if feature_type == "增强包络":
+            self.bandpass_frame.pack(anchor=tk.W, padx=5, pady=2)
+        else:
+            self.bandpass_frame.pack_forget()
 
     def create_tabs(self):
         # 数据处理选项卡
@@ -1327,6 +1342,30 @@ class MainWindow(tk.Tk):
         tk.Label(y_range_frame, text="最大值:").pack(side=tk.LEFT)
         tk.Entry(y_range_frame, textvariable=self.y_axis_max_var_time, width=10).pack(side=tk.LEFT)
 
+        # 时域特征指标选择
+        tk.Label(control_frame, text="时域特征指标:").pack(anchor=tk.W, padx=5, pady=2)
+        time_feature_frame = tk.Frame(control_frame)
+        time_feature_frame.pack(anchor=tk.W, padx=5, pady=2)
+        feature_options = ["峭度", "TKEO", "包络", "增强包络", "RMS", "峰值因子", "偏度"]
+        self.time_feature_menu = ttk.Combobox(time_feature_frame, textvariable=self.time_feature_type_var,
+                                               values=feature_options, state='readonly', width=12)
+        self.time_feature_menu.pack(side=tk.LEFT)
+        self.time_feature_menu.bind('<<ComboboxSelected>>', self._on_feature_type_changed)
+
+        # 增强包络的带通滤波范围（默认隐藏）
+        self.bandpass_frame = tk.Frame(control_frame)
+        tk.Label(self.bandpass_frame, text="带通滤波 (Hz):").pack(side=tk.LEFT)
+        tk.Entry(self.bandpass_frame, textvariable=self.envelope_bandpass_low_var, width=6).pack(side=tk.LEFT, padx=2)
+        tk.Label(self.bandpass_frame, text="-").pack(side=tk.LEFT)
+        tk.Entry(self.bandpass_frame, textvariable=self.envelope_bandpass_high_var, width=6).pack(side=tk.LEFT, padx=2)
+
+        # 时频图类型选择
+        tk.Label(control_frame, text="时频图类型:").pack(anchor=tk.W, padx=5, pady=2)
+        time_freq_type_frame = tk.Frame(control_frame)
+        time_freq_type_frame.pack(anchor=tk.W, padx=5, pady=2)
+        tk.Radiobutton(time_freq_type_frame, text="STFT谱图", variable=self.time_freq_type_var, value="STFT").pack(side=tk.LEFT)
+        tk.Radiobutton(time_freq_type_frame, text="小波变换", variable=self.time_freq_type_var, value="Wavelet").pack(side=tk.LEFT)
+
         # 应用时间范围到后续分析的控件 (动态过滤)
         spectrum_apply_frame = tk.Frame(control_frame)
         spectrum_apply_frame.pack(anchor=tk.W, padx=5, pady=5)
@@ -1395,9 +1434,10 @@ class MainWindow(tk.Tk):
 
         # 清除之前的图像
         self.figure_time.clear()
-        # 上方：时域波形；下方：时间-频率分析图（谱图）
-        ax = self.figure_time.add_subplot(211)
-        ax_spec = self.figure_time.add_subplot(212, sharex=ax)
+        # 三个子图：上方时域波形，中间峭度，下方谱图
+        ax = self.figure_time.add_subplot(311)
+        ax_kurtosis = self.figure_time.add_subplot(312, sharex=ax)
+        ax_spec = self.figure_time.add_subplot(313, sharex=ax)
         self.figure_time.tight_layout()
 
         # 保存当前坐标轴引用，用于后续绘制播放指示红线
@@ -1438,81 +1478,262 @@ class MainWindow(tk.Tk):
                 messagebox.showwarning("警告", "Y轴最小值和最大值必须是数字！")
                 return
 
-        # ====== 下方：时间-频率分析图（谱图） ======
+        # ====== 中间：时域特征指标（可切换）======
+        feature_type = self.time_feature_type_var.get()
+
         try:
-            from scipy.signal import spectrogram
+            from scipy.stats import kurtosis, skew
+            from scipy.signal import hilbert
 
-            # 选择合适的窗口长度，避免对很长数据导致计算过慢
-            # 经验：nperseg 至少 256，至多 4096，且不超过数据长度
-            default_nperseg = 1024
-            nperseg = min(max(256, default_nperseg), len(data_segment))
-            noverlap = nperseg // 2
+            n_samples = len(data_segment)
 
-            f_spec, t_spec, Sxx = spectrogram(
-                data_segment,
-                fs=sampling_rate,
-                nperseg=nperseg,
-                noverlap=noverlap,
-                scaling="density",
-                mode="magnitude",
-            )
+            if feature_type == "TKEO":
+                # ====== Teager-Kaiser 能量算子 ======
+                # TKEO[n] = x[n]^2 - x[n-1] * x[n+1]
+                # 对冲击极其敏感，响应尖锐
+                tkeo = np.zeros(n_samples)
+                tkeo[1:-1] = data_segment[1:-1]**2 - data_segment[:-2] * data_segment[2:]
+                tkeo[0] = tkeo[1]
+                tkeo[-1] = tkeo[-2]
 
-            # 转换为 dB，避免 log(0)
-            Sxx_db = 20 * np.log10(Sxx + 1e-12)
+                # 平滑处理（滑动平均）
+                smooth_window = max(int(sampling_rate * 0.002), 10)  # 2ms 窗口
+                kernel = np.ones(smooth_window) / smooth_window
+                tkeo_smooth = np.convolve(np.abs(tkeo), kernel, mode='same')
 
-            # --- 降采样谱图维度，避免绘制超大矩阵导致卡顿 ---
-            max_freq_bins = 256
-            max_time_bins = 512
+                ax_kurtosis.plot(t_segment, tkeo_smooth, color='crimson', linewidth=0.5)
+                ax_kurtosis.set_ylabel("TKEO", fontproperties=self.font_prop)
+                ax_kurtosis.set_title("Teager-Kaiser 能量算子", fontproperties=self.font_prop, fontsize=9)
 
-            n_freq, n_time = Sxx_db.shape
-            if n_freq > max_freq_bins:
-                step_f = max(1, n_freq // max_freq_bins)
-                Sxx_db = Sxx_db[::step_f, :]
-                f_spec = f_spec[::step_f]
-                n_freq = Sxx_db.shape[0]
+                # 标记高能量点
+                threshold = np.mean(tkeo_smooth) + 3 * np.std(tkeo_smooth)
+                ax_kurtosis.axhline(y=threshold, color='gray', linestyle='--', alpha=0.7, label=f'阈值 (μ+3σ)')
 
-            if n_time > max_time_bins:
-                step_t = max(1, n_time // max_time_bins)
-                Sxx_db = Sxx_db[:, ::step_t]
-                t_spec = t_spec[::step_t]
-                n_time = Sxx_db.shape[1]
+            elif feature_type == "包络":
+                # ====== Hilbert 包络 ======
+                analytic_signal = hilbert(data_segment)
+                envelope = np.abs(analytic_signal)
 
-            # t_spec 是相对时间，从 0 开始；加上 time_start，变成绝对时间
-            t_spec_abs = t_spec + time_start
+                ax_kurtosis.plot(t_segment, envelope, color='green', linewidth=0.5)
+                ax_kurtosis.set_ylabel("包络幅值", fontproperties=self.font_prop)
+                ax_kurtosis.set_title("Hilbert 包络", fontproperties=self.font_prop, fontsize=9)
 
-            # 使用 imshow 而不是 pcolormesh，把谱图当成一张"图片"绘制，性能更好
-            if n_freq > 0 and n_time > 0:
-                # 频率范围用于设置 extent 和对数坐标
-                f_min_raw = float(f_spec[0])
-                f_max_raw = float(f_spec[-1])
-                # 避免 f_min 为 0
-                f_min = f_min_raw if f_min_raw > 0 else max(1.0, sampling_rate / 1e6)
-                f_max = f_max_raw if f_max_raw > f_min else sampling_rate / 2.0
+            elif feature_type == "增强包络":
+                # ====== 增强包络：带通滤波 + Hilbert 包络 + 平滑 ======
+                from scipy.signal import butter, filtfilt
 
-                extent = [
-                    float(t_spec_abs[0]),
-                    float(t_spec_abs[-1]),
-                    f_min,
-                    f_max,
-                ]
+                # 获取带通滤波范围
+                try:
+                    bp_low = float(self.envelope_bandpass_low_var.get())
+                    bp_high = float(self.envelope_bandpass_high_var.get())
+                    nyquist = sampling_rate / 2
+                    # 确保频率范围有效
+                    bp_low = max(1, min(bp_low, nyquist * 0.95))
+                    bp_high = max(bp_low + 10, min(bp_high, nyquist * 0.95))
+                except ValueError:
+                    bp_low, bp_high = 500, 5000
+                    nyquist = sampling_rate / 2
+                    bp_high = min(bp_high, nyquist * 0.95)
+
+                # 设计带通滤波器
+                order = 4
+                low = bp_low / nyquist
+                high = bp_high / nyquist
+                b, a = butter(order, [low, high], btype='band')
+
+                # 应用带通滤波
+                filtered_data = filtfilt(b, a, data_segment)
+
+                # 提取 Hilbert 包络
+                analytic_signal = hilbert(filtered_data)
+                envelope = np.abs(analytic_signal)
+
+                # 平滑处理（低通滤波）
+                smooth_cutoff = 50  # 50 Hz 低通
+                smooth_cutoff_norm = smooth_cutoff / nyquist
+                if smooth_cutoff_norm < 1:
+                    b_smooth, a_smooth = butter(2, smooth_cutoff_norm, btype='low')
+                    envelope_smooth = filtfilt(b_smooth, a_smooth, envelope)
+                else:
+                    envelope_smooth = envelope
+
+                ax_kurtosis.plot(t_segment, envelope_smooth, color='darkgreen', linewidth=0.8)
+                ax_kurtosis.set_ylabel("增强包络", fontproperties=self.font_prop)
+                ax_kurtosis.set_title(f"增强包络 (带通: {bp_low:.0f}-{bp_high:.0f} Hz)",
+                                     fontproperties=self.font_prop, fontsize=9)
+
+            elif feature_type == "RMS":
+                # ====== 滑动窗口 RMS ======
+                window_samples = max(int(sampling_rate * 0.01), 64)
+                step = max(window_samples // 4, 1)
+
+                rms_values = []
+                rms_times = []
+                for i in range(0, n_samples - window_samples + 1, step):
+                    window_data = data_segment[i:i + window_samples]
+                    rms = np.sqrt(np.mean(window_data**2))
+                    rms_values.append(rms)
+                    center_idx = i + window_samples // 2
+                    rms_times.append(t_segment[min(center_idx, len(t_segment) - 1)])
+
+                if rms_values:
+                    ax_kurtosis.plot(rms_times, rms_values, color='purple', linewidth=0.8)
+                ax_kurtosis.set_ylabel("RMS", fontproperties=self.font_prop)
+                ax_kurtosis.set_title("滑动窗口 RMS 能量", fontproperties=self.font_prop, fontsize=9)
+
+            elif feature_type == "峰值因子":
+                # ====== 滑动窗口峰值因子 (Crest Factor) ======
+                # CF = Peak / RMS，检测冲击
+                window_samples = max(int(sampling_rate * 0.01), 64)
+                step = max(window_samples // 4, 1)
+
+                cf_values = []
+                cf_times = []
+                for i in range(0, n_samples - window_samples + 1, step):
+                    window_data = data_segment[i:i + window_samples]
+                    peak = np.max(np.abs(window_data))
+                    rms = np.sqrt(np.mean(window_data**2))
+                    cf = peak / (rms + 1e-12)
+                    cf_values.append(cf)
+                    center_idx = i + window_samples // 2
+                    cf_times.append(t_segment[min(center_idx, len(t_segment) - 1)])
+
+                if cf_values:
+                    cf_values = np.array(cf_values)
+                    ax_kurtosis.plot(cf_times, cf_values, color='teal', linewidth=0.8)
+                    # 正弦波的峰值因子约为 1.414
+                    ax_kurtosis.axhline(y=1.414, color='gray', linestyle='--', alpha=0.7, label='正弦波 (CF=1.414)')
+                ax_kurtosis.set_ylabel("峰值因子", fontproperties=self.font_prop)
+                ax_kurtosis.set_title("峰值因子 (Crest Factor)", fontproperties=self.font_prop, fontsize=9)
+
+            elif feature_type == "偏度":
+                # ====== 滑动窗口偏度 (Skewness) ======
+                window_samples = max(int(sampling_rate * 0.01), 64)
+                step = max(window_samples // 4, 1)
+
+                skew_values = []
+                skew_times = []
+                for i in range(0, n_samples - window_samples + 1, step):
+                    window_data = data_segment[i:i + window_samples]
+                    s = skew(window_data)
+                    skew_values.append(s)
+                    center_idx = i + window_samples // 2
+                    skew_times.append(t_segment[min(center_idx, len(t_segment) - 1)])
+
+                if skew_values:
+                    ax_kurtosis.plot(skew_times, skew_values, color='brown', linewidth=0.8)
+                    ax_kurtosis.axhline(y=0, color='gray', linestyle='--', alpha=0.7, label='对称分布 (S=0)')
+                ax_kurtosis.set_ylabel("偏度", fontproperties=self.font_prop)
+                ax_kurtosis.set_title("偏度 (Skewness)", fontproperties=self.font_prop, fontsize=9)
+
+            else:
+                # ====== 默认：峭度 (Kurtosis) ======
+                window_samples = max(int(sampling_rate * 0.01), 64)
+                step = max(window_samples // 4, 1)
+
+                kurtosis_values = []
+                kurtosis_times = []
+                for i in range(0, n_samples - window_samples + 1, step):
+                    window_data = data_segment[i:i + window_samples]
+                    k = kurtosis(window_data, fisher=False)
+                    kurtosis_values.append(k)
+                    center_idx = i + window_samples // 2
+                    kurtosis_times.append(t_segment[min(center_idx, len(t_segment) - 1)])
+
+                if kurtosis_values:
+                    kurtosis_values = np.array(kurtosis_values)
+                    ax_kurtosis.plot(kurtosis_times, kurtosis_values, color='darkorange', linewidth=0.8)
+                    ax_kurtosis.axhline(y=3, color='gray', linestyle='--', alpha=0.7, label='正态分布 (K=3)')
+
+                    # 标记高峭度点
+                    high_threshold = 6
+                    high_mask = kurtosis_values > high_threshold
+                    if np.any(high_mask):
+                        ax_kurtosis.scatter(np.array(kurtosis_times)[high_mask],
+                                           kurtosis_values[high_mask],
+                                           color='red', s=10, zorder=5, label=f'高峭度 (K>{high_threshold})')
+
+                ax_kurtosis.set_ylabel("峭度", fontproperties=self.font_prop)
+                ax_kurtosis.set_title("峭度 (Kurtosis)", fontproperties=self.font_prop, fontsize=9)
+
+            # 通用设置
+            ax_kurtosis.legend(prop=self.font_prop, loc='upper right', fontsize=7)
+            ax_kurtosis.grid(True, alpha=0.3)
+            ax_kurtosis.set_xlim(time_absolute_start, time_absolute_end)
+
+        except Exception as e:
+            ax_kurtosis.text(0.5, 0.5, f"特征计算失败:\n{e}", ha='center', va='center',
+                            transform=ax_kurtosis.transAxes)
+            ax_kurtosis.set_axis_off()
+
+        # ====== 下方：时间-频率分析图（STFT谱图 或 小波变换） ======
+        time_freq_type = self.time_freq_type_var.get()
+
+        try:
+            if time_freq_type == "Wavelet":
+                # ====== 小波变换 (CWT) ======
+                import pywt
+
+                # 使用 Morlet 小波，适合检测瞬态冲击
+                wavelet = 'cmor1.5-1.0'  # 复 Morlet 小波
+
+                # 定义频率范围（对数分布）
+                f_min_cwt = 1.0  # 最低频率 1 Hz
+                f_max_cwt = min(sampling_rate / 2, 5000)  # 最高频率（不超过奈奎斯特频率）
+                num_freqs = 128  # 频率点数
+
+                # 生成对数分布的频率
+                frequencies = np.logspace(np.log10(f_min_cwt), np.log10(f_max_cwt), num_freqs)
+
+                # 计算对应的尺度
+                # 对于 cmor 小波，中心频率约为 1.0（由参数决定）
+                scales = pywt.central_frequency(wavelet) * sampling_rate / frequencies
+
+                # 降采样数据以加速计算（如果数据太长）
+                max_samples_cwt = 8000
+                if len(data_segment) > max_samples_cwt:
+                    downsample_factor = len(data_segment) // max_samples_cwt
+                    data_cwt = data_segment[::downsample_factor]
+                    t_cwt = t_segment[::downsample_factor]
+                    fs_cwt = sampling_rate / downsample_factor
+                    scales_adjusted = scales / downsample_factor
+                else:
+                    data_cwt = data_segment
+                    t_cwt = t_segment
+                    fs_cwt = sampling_rate
+                    scales_adjusted = scales
+
+                # 计算连续小波变换
+                coefficients, _ = pywt.cwt(data_cwt, scales_adjusted, wavelet, sampling_period=1.0/fs_cwt)
+
+                # 取模值（幅度）
+                cwt_magnitude = np.abs(coefficients)
+
+                # 转换为 dB
+                cwt_db = 20 * np.log10(cwt_magnitude + 1e-12)
+
+                # 绘制小波变换图
+                extent = [t_cwt[0], t_cwt[-1], f_min_cwt, f_max_cwt]
 
                 im = ax_spec.imshow(
-                    Sxx_db,
+                    cwt_db,
                     origin="lower",
                     aspect="auto",
                     extent=extent,
-                    cmap="viridis",
+                    cmap="jet",  # 使用 jet 色图，冲击更明显
+                    interpolation='bilinear',
                 )
 
                 ax_spec.set_ylabel("频率 (Hz)", fontproperties=self.font_prop)
                 ax_spec.set_xlabel("时间 (s)", fontproperties=self.font_prop)
+                ax_spec.set_title("小波变换 (CWT - Morlet)", fontproperties=self.font_prop, fontsize=9)
 
-                # 纵轴使用对数刻度（频率对数变化）
+                # 纵轴使用对数刻度
                 ax_spec.set_yscale("log")
-                ax_spec.set_ylim(f_min, f_max)
+                ax_spec.set_ylim(f_min_cwt, f_max_cwt)
                 ax_spec.set_xlim(time_absolute_start, time_absolute_end)
 
-                # 添加颜色条，显示幅值（dB），放在下方，保证与时域信号的横坐标对齐
+                # 添加颜色条
                 cbar = self.figure_time.colorbar(
                     im,
                     ax=ax_spec,
@@ -1520,22 +1741,100 @@ class MainWindow(tk.Tk):
                     pad=0.15,
                 )
                 cbar.set_label("幅值 (dB)")
+
             else:
-                ax_spec.text(
-                    0.5,
-                    0.5,
-                    "谱图数据为空",
-                    ha="center",
-                    va="center",
-                    transform=ax_spec.transAxes,
+                # ====== STFT 谱图（原有逻辑） ======
+                from scipy.signal import spectrogram
+
+                # 选择合适的窗口长度，避免对很长数据导致计算过慢
+                default_nperseg = 1024
+                nperseg = min(max(256, default_nperseg), len(data_segment))
+                noverlap = nperseg // 2
+
+                f_spec, t_spec, Sxx = spectrogram(
+                    data_segment,
+                    fs=sampling_rate,
+                    nperseg=nperseg,
+                    noverlap=noverlap,
+                    scaling="density",
+                    mode="magnitude",
                 )
-                ax_spec.set_axis_off()
+
+                # 转换为 dB
+                Sxx_db = 20 * np.log10(Sxx + 1e-12)
+
+                # 降采样谱图维度
+                max_freq_bins = 256
+                max_time_bins = 512
+
+                n_freq, n_time = Sxx_db.shape
+                if n_freq > max_freq_bins:
+                    step_f = max(1, n_freq // max_freq_bins)
+                    Sxx_db = Sxx_db[::step_f, :]
+                    f_spec = f_spec[::step_f]
+                    n_freq = Sxx_db.shape[0]
+
+                if n_time > max_time_bins:
+                    step_t = max(1, n_time // max_time_bins)
+                    Sxx_db = Sxx_db[:, ::step_t]
+                    t_spec = t_spec[::step_t]
+                    n_time = Sxx_db.shape[1]
+
+                t_spec_abs = t_spec + time_start
+
+                if n_freq > 0 and n_time > 0:
+                    f_min_raw = float(f_spec[0])
+                    f_max_raw = float(f_spec[-1])
+                    f_min = f_min_raw if f_min_raw > 0 else max(1.0, sampling_rate / 1e6)
+                    f_max = f_max_raw if f_max_raw > f_min else sampling_rate / 2.0
+
+                    extent = [
+                        float(t_spec_abs[0]),
+                        float(t_spec_abs[-1]),
+                        f_min,
+                        f_max,
+                    ]
+
+                    im = ax_spec.imshow(
+                        Sxx_db,
+                        origin="lower",
+                        aspect="auto",
+                        extent=extent,
+                        cmap="viridis",
+                    )
+
+                    ax_spec.set_ylabel("频率 (Hz)", fontproperties=self.font_prop)
+                    ax_spec.set_xlabel("时间 (s)", fontproperties=self.font_prop)
+                    ax_spec.set_title("STFT 谱图", fontproperties=self.font_prop, fontsize=9)
+
+                    ax_spec.set_yscale("log")
+                    ax_spec.set_ylim(f_min, f_max)
+                    ax_spec.set_xlim(time_absolute_start, time_absolute_end)
+
+                    cbar = self.figure_time.colorbar(
+                        im,
+                        ax=ax_spec,
+                        orientation="horizontal",
+                        pad=0.15,
+                    )
+                    cbar.set_label("幅值 (dB)")
+                else:
+                    ax_spec.text(
+                        0.5,
+                        0.5,
+                        "谱图数据为空",
+                        ha="center",
+                        va="center",
+                        transform=ax_spec.transAxes,
+                    )
+                    ax_spec.set_axis_off()
+
         except Exception as e:
-            # 谱图计算失败时，不影响上面的时域图
+            # 时频图计算失败时，不影响上面的时域图
             ax_spec.text(
                 0.5,
                 0.5,
-                f"谱图计算失败:\n{e}",
+                f"时频图计算失败:\n{e}",
                 ha="center",
                 va="center",
                 transform=ax_spec.transAxes,
