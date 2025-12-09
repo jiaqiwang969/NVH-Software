@@ -124,6 +124,17 @@ class MainWindow(tk.Tk):
         self.segment_total_count = 0  # 总段数
         self.segment_slider = None  # 滑块控件引用
         self.segment_info_label = None  # 段信息标签引用
+        # 切分模式播放相关变量
+        self.segment_audio_is_playing = False
+        self.segment_audio_stop_flag = False
+        self.segment_audio_thread = None
+        self.segment_ax_time = None  # 切分模式时域图坐标轴引用
+        self.segment_play_line = None  # 切分模式播放红线
+        self.segment_audio_start_time = 0.0  # 当前段起始时间
+        self.segment_audio_end_time = 0.0  # 当前段结束时间
+        self.segment_audio_start_walltime = None
+        self.segment_audio_duration = 0.0
+        self.segment_audio_update_job = None
         # 时域信号变量
         # 注意：time_lower/upper_display_var 为“用户当前想看的时间窗口”，
         # 在同一个文件内切换通道时，我们希望保持这个窗口不变，便于对比。
@@ -616,6 +627,12 @@ class MainWindow(tk.Tk):
                                         length=200, command=self.on_segment_slider_change)
         self.segment_slider.pack(anchor=tk.W, padx=5, pady=2)
 
+        # 播放控制按钮
+        play_frame = tk.Frame(self.segment_params_frame)
+        play_frame.pack(anchor=tk.W, padx=5, pady=5)
+        tk.Button(play_frame, text="播放当前段", command=self.play_segment_audio).pack(side=tk.LEFT, padx=2)
+        tk.Button(play_frame, text="停止播放", command=self.stop_segment_audio).pack(side=tk.LEFT, padx=2)
+
         # 默认隐藏切分参数
         self.segment_params_frame.pack_forget()
 
@@ -768,6 +785,177 @@ class MainWindow(tk.Tk):
             amplitude = amplitude * n / window_sum
 
         return freq, amplitude
+
+    def play_segment_audio(self):
+        """播放当前切分段的音频"""
+        if self.segment_audio_is_playing:
+            messagebox.showinfo("提示", "当前正在播放，请先停止播放。")
+            return
+
+        if not self.segment_mode_var.get():
+            messagebox.showwarning("警告", "请先启用切分模式并绘制图形！")
+            return
+
+        selected_file = self.file_var_spectrum.get()
+        selected_channel = self.channel_var_spectrum.get()
+        if not selected_file or not selected_channel:
+            messagebox.showwarning("警告", "请选择文件和通道！")
+            return
+
+        # 获取时域数据
+        time_data = self.controller.get_time_domain_data(selected_file, selected_channel)
+        if time_data is None:
+            messagebox.showwarning("警告", "未找到对应的时域数据！")
+            return
+
+        sampling_rate = float(self.controller.params.sampling_rate) if self.controller.params else 25600.0
+
+        # 获取当前段的时间范围
+        seg_start, seg_end = self.get_segment_time_range(self.segment_current_idx)
+
+        # 截取数据
+        start_idx = int(seg_start * sampling_rate)
+        end_idx = int(seg_end * sampling_rate)
+        if end_idx > len(time_data):
+            end_idx = len(time_data)
+
+        segment = np.asarray(time_data[start_idx:end_idx], dtype=np.float32)
+        if segment.size < 100:
+            messagebox.showwarning("警告", "选定时间段太短，无法播放！")
+            return
+
+        # 归一化
+        max_abs = float(np.max(np.abs(segment)))
+        if max_abs <= 0:
+            messagebox.showwarning("警告", "该时间段信号幅值为 0，无法播放！")
+            return
+        segment_norm = np.clip(segment / max_abs, -1.0, 1.0).astype(np.float32)
+
+        # 记录播放信息
+        self.segment_audio_duration = max(seg_end - seg_start, 1e-6)
+        self.segment_audio_start_walltime = None
+        self.segment_audio_stop_flag = False
+        self.segment_audio_is_playing = True
+
+        import threading
+        import time as _time
+
+        def worker():
+            import pyaudio
+            from scipy.signal import resample
+            p = None
+            stream = None
+            try:
+                play_rate = int(sampling_rate)
+                segment_play = segment_norm
+                data_int16 = np.int16(segment_play * 32767)
+
+                p = pyaudio.PyAudio()
+                try:
+                    stream = p.open(format=pyaudio.paInt16, channels=1, rate=play_rate, output=True)
+                except Exception:
+                    if stream is not None:
+                        stream.close()
+                    if p is not None:
+                        p.terminate()
+                    p = pyaudio.PyAudio()
+                    target_rate = 44100
+                    num_samples = int(len(segment_norm) * target_rate / sampling_rate)
+                    if num_samples <= 0:
+                        raise ValueError("重采样后的长度无效")
+                    segment_play = resample(segment_norm, num_samples).astype(np.float32)
+                    data_int16 = np.int16(segment_play * 32767)
+                    play_rate = target_rate
+                    stream = p.open(format=pyaudio.paInt16, channels=1, rate=play_rate, output=True)
+
+                self.segment_audio_start_walltime = _time.perf_counter()
+
+                total_samples = len(data_int16)
+                chunk = 4096
+                idx = 0
+                while idx < total_samples and not self.segment_audio_stop_flag:
+                    end = min(idx + chunk, total_samples)
+                    chunk_bytes = data_int16[idx:end].tobytes()
+                    stream.write(chunk_bytes)
+                    idx = end
+
+            except Exception as e:
+                err_msg = f"播放音频失败：{e}"
+                self.after(0, lambda: messagebox.showerror("错误", err_msg))
+            finally:
+                if stream is not None:
+                    try:
+                        stream.stop_stream()
+                        stream.close()
+                    except Exception:
+                        pass
+                if p is not None:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                self.segment_audio_is_playing = False
+                self.segment_audio_stop_flag = False
+
+        self.segment_audio_thread = threading.Thread(target=worker, daemon=True)
+        self.segment_audio_thread.start()
+        self.start_segment_play_line_timer()
+
+    def stop_segment_audio(self):
+        """停止切分段音频播放"""
+        if self.segment_audio_is_playing:
+            self.segment_audio_stop_flag = True
+        if self.segment_audio_update_job is not None:
+            try:
+                self.after_cancel(self.segment_audio_update_job)
+            except Exception:
+                pass
+            self.segment_audio_update_job = None
+
+    def start_segment_play_line_timer(self):
+        """启动切分模式播放红线更新定时器"""
+        if self.segment_audio_update_job is not None:
+            try:
+                self.after_cancel(self.segment_audio_update_job)
+            except Exception:
+                pass
+            self.segment_audio_update_job = None
+
+        def _update():
+            if not self.segment_audio_is_playing:
+                # 播放结束，隐藏红线
+                if self.segment_play_line is not None:
+                    self.segment_play_line.set_alpha(0.0)
+                    try:
+                        self.canvas_spectrum_analysis.draw_idle()
+                    except Exception:
+                        pass
+                self.segment_audio_update_job = None
+                return
+
+            if self.segment_audio_start_walltime is None:
+                self.segment_audio_update_job = self.after(30, _update)
+                return
+
+            import time as _time
+            elapsed = _time.perf_counter() - self.segment_audio_start_walltime
+            duration = max(self.segment_audio_duration, 1e-6)
+            progress = min(max(elapsed / duration, 0.0), 1.0)
+
+            cur_t = self.segment_audio_start_time + \
+                    (self.segment_audio_end_time - self.segment_audio_start_time) * progress
+
+            if self.segment_ax_time is not None and self.segment_play_line is not None:
+                self.segment_play_line.set_xdata([cur_t, cur_t])
+                self.segment_play_line.set_alpha(0.9)
+                self.canvas_spectrum_analysis.draw_idle()
+
+            if self.segment_audio_is_playing:
+                self.segment_audio_update_job = self.after(30, _update)
+            else:
+                self.segment_audio_update_job = None
+
+        self.segment_audio_update_job = self.after(30, _update)
 
     def plot_spectrum_analysis(self):
         """
@@ -949,6 +1137,18 @@ class MainWindow(tk.Tk):
             ax_time.set_ylabel("幅值", fontproperties=self.font_prop)
             ax_time.grid()
             ax_time.set_xlim(segment_time_vector[0], segment_time_vector[-1])
+
+            # 保存坐标轴引用和时间范围，用于播放红线
+            self.segment_ax_time = ax_time
+            self.segment_audio_start_time = segment_time_vector[0]
+            self.segment_audio_end_time = segment_time_vector[-1]
+
+            # 创建播放红线（初始透明）
+            play_line = ax_time.axvline(color='r', linestyle='-', alpha=0.0, linewidth=2)
+            self.segment_play_line = play_line
+        else:
+            self.segment_ax_time = None
+            self.segment_play_line = None
 
         # 调整子图间距
         self.figure_spectrum_analysis.tight_layout()
