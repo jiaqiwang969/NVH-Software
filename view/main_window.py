@@ -790,6 +790,8 @@ class MainWindow(tk.Tk):
         # 判断是否启用切分模式
         segment_mode = self.segment_mode_var.get()
         title_suffix = ""  # 用于在标题中显示时间范围
+        segment_time_data = None  # 用于存储当前段的原始时域数据
+        segment_time_vector = None  # 用于存储当前段的时间向量
 
         if segment_mode:
             # 切分模式：从时域数据计算当前段的频谱
@@ -824,9 +826,17 @@ class MainWindow(tk.Tk):
                 messagebox.showwarning("警告", "计算切分段频谱失败！")
                 return
 
-            # 获取时间范围用于标题
+            # 获取时间范围用于标题和时域图
             seg_start, seg_end = self.get_segment_time_range(self.segment_current_idx)
             title_suffix = f" [{seg_start:.2f}s - {seg_end:.2f}s]"
+
+            # 提取当前段的原始时域数据（不加窗）用于显示
+            start_idx = int(seg_start * sampling_rate)
+            end_idx = int(seg_end * sampling_rate)
+            if end_idx > len(time_data):
+                end_idx = len(time_data)
+            segment_time_data = time_data[start_idx:end_idx]
+            segment_time_vector = np.linspace(seg_start, seg_end, len(segment_time_data))
         else:
             # 非切分模式：使用原有逻辑
             freq, amplitude = self.controller.get_spectrum_data(selected_file, selected_channel)
@@ -903,7 +913,16 @@ class MainWindow(tk.Tk):
 
         # 清除之前的图像
         self.figure_spectrum_analysis.clear()
-        ax = self.figure_spectrum_analysis.add_subplot(111)
+
+        # 根据是否为切分模式决定子图布局
+        if segment_mode and segment_time_data is not None:
+            # 切分模式：上方频谱图，下方时域图
+            ax = self.figure_spectrum_analysis.add_subplot(211)
+            ax_time = self.figure_spectrum_analysis.add_subplot(212)
+        else:
+            # 非切分模式：只有频谱图
+            ax = self.figure_spectrum_analysis.add_subplot(111)
+            ax_time = None
 
         ax.plot(freq_to_plot, amplitude_to_plot, label=selected_channel)
         ax.set_title(f"频谱分析 - {selected_channel}{title_suffix}", fontproperties=self.font_prop)
@@ -921,6 +940,18 @@ class MainWindow(tk.Tk):
             ax.set_yscale('log')
         if not y_axis_auto_scale:
             ax.set_ylim(y_axis_min, y_axis_max)
+
+        # 绘制时域图（仅切分模式）
+        if ax_time is not None and segment_time_data is not None:
+            ax_time.plot(segment_time_vector, segment_time_data, color='steelblue', linewidth=0.5)
+            ax_time.set_title(f"时域信号（原始，不加窗）{title_suffix}", fontproperties=self.font_prop)
+            ax_time.set_xlabel("时间 (s)", fontproperties=self.font_prop)
+            ax_time.set_ylabel("幅值", fontproperties=self.font_prop)
+            ax_time.grid()
+            ax_time.set_xlim(segment_time_vector[0], segment_time_vector[-1])
+
+        # 调整子图间距
+        self.figure_spectrum_analysis.tight_layout()
 
         # 添加频率标记
         if add_frequency_markers:
