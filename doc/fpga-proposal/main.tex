@@ -1,0 +1,162 @@
+\documentclass[UTF8,a4paper,12pt]{ctexart}
+\usepackage{geometry}
+\geometry{a4paper,margin=2.4cm}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\setmainfont{Times New Roman}
+\setCJKmainfont[Path=../../]{SimHei}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color[gray]{0.97},
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  keywordstyle=\bfseries,
+  commentstyle=\color{gray}
+}
+
+\title{Tang Nano 9K FPGA 冲击检测方案书}
+\author{NVH 团队}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\section{项目目标}
+\begin{itemize}
+  \item 将软件侧已验证的冲击检测方案（包络+窄带 9.1--9.5 kHz、Teager-Kaiser 能量、峭度等特征）固化到 Tang Nano 9K FPGA，实现低延迟、低功耗在线检测。
+  \item 对硬件选型、接口、算法实现和资源优化给出可落地的设计，并明确软件侧的验证与联调路径，为后续在 FPGA/SoC 上量产或迁移到 ASIC 做准备。
+\end{itemize}
+
+\section{硬件平台与接口}
+\subsection{Tang Nano 9K 核心资源（简要）}
+\begin{center}
+  \begin{tabular}{p{3.2cm}p{9cm}}
+    \toprule
+    关键资源 & 说明（以官方手册为准）\\
+    \midrule
+    FPGA 核心 & Gowin GW1NR-9C，约 9k LUT，约 7k FF，BRAM \textasciitilde0.5 Mb，\textasciitilde20 个 18$\times$18 DSP 块\\
+    片上存储 & 1$\times$64 Mbit PSRAM（约 8 MB） \\
+    Flash & 1$\times$64 Mbit Nor Flash，用于位流与少量参数存储 \\
+    IO/扩展 & 1 个 Type-C（供电/调试），多组 PMOD/排针，可提供 1.8V/3.3V IO 视具体 Bank 供电 \\
+    时钟 & 板载 27 MHz 晶振，可用 PLL 派生音频/传感器时钟 \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+
+\subsection{传感器与前端}
+\begin{itemize}
+  \item 骨传导传感器（UPM01D）输出为 PDM（数字脉冲密度），典型工作电压 1.8 V，时钟 0.4--1 MHz，最大带宽约 11 kHz。
+  \item 开发板本身无模拟前端/ADC，需在外部提供：\textbf{PDM 时钟与数据输入}。若改用模拟传感器，则需外接 ADC（Analog-to-Digital Converter，模数转换器）。
+  \item IO 电平：PDM 需接到 1.8 V Bank，确保供电与时序满足传感器数据手册要求，走线尽量短并加去耦。
+\end{itemize}
+
+\subsection{推荐外设组合}
+\begin{itemize}
+  \item \textbf{PDM 接口方案（首选）}：直接在 FPGA 侧生成 PDM 时钟（0.8--1 MHz），采集 DATA，引入 CIC+FIR 做抽取到 48 kHz PCM，后续进入检测链路。
+  \item \textbf{模拟方案（备选）}：若换为模拟加速度计/麦克风，可选 16--24 bit、采样 48--192 kHz 的音频 ADC（I\textsuperscript{2}S/TDM）或 500 ksps 以上的 SPI SAR ADC。模拟前端需包含抗混叠低通与 9 kHz 邻域的有源带通/增益调理。
+\end{itemize}
+
+\section{信号链总体设计}
+\begin{enumerate}
+  \item \textbf{采样与同步}：PDM 采集 $\rightarrow$ CIC 抽取（64 或 128 倍）$\rightarrow$ 补偿 FIR，得到 48 kHz PCM。
+  \item \textbf{窄带带通（9.1--9.5 kHz）}：
+  \begin{itemize}
+    \item 推荐两个二阶 IIR Biquad 级联（4 阶），Q 适中，系数量化 18 bit；或使用 64--96 阶对称 FIR，利用系数对称性节省乘法器。
+    \item 系数在 Python/Matlab 设计，输出固定小数（如 Q1.15/Q2.14），同时导出 C/Verilog 常量表。
+  \end{itemize}
+  \item \textbf{包络检波}（效果最佳的现有特征）：全波整流后用一阶或二阶 IIR 低通（截止 200--500 Hz）平滑，输出包络峰值用于主判据。
+  \item \textbf{时域特征扩展}：
+  \begin{itemize}
+    \item Teager-Kaiser 能量：$\psi[n] = x[n]^2 - x[n-1]\cdot x[n+1]$，再做滑动均值。
+    \item 峭度/峭度因子（可选）：窗口内 $E[x^4]/(E[x^2])^2$，窗口长度 32--64 点以减轻资源占用。
+    \item RMS、峰峰值、包络上升沿时间等作为辅助判据，均采用定点实现。
+  \end{itemize}
+  \item \textbf{判决逻辑}：
+  \begin{itemize}
+    \item 双阈值：包络峰值 $>$ 阈值\textsubscript{1}，且 Teager 均值 $>$ 阈值\textsubscript{2}；支持自适应噪声底线（滑动基线 + 偏移）。
+    \item 触发保持/死区：在 $N$ 个采样周期内保持“触发”状态，避免抖动；死区时间控制重复触发。
+  \end{itemize}
+  \item \textbf{输出与接口}：触发标志、中间特征值可通过寄存器、UART 或 PMOD 输出；调试阶段建议带一组特征 FIFO 供逻辑分析仪抓取。
+\end{enumerate}
+
+\section{FPGA 模块划分与实现要点}
+\begin{itemize}
+  \item \textbf{PDM 采集与解码}：时钟发生器、边沿对齐、CIC（3--5 级）+ 补偿 FIR。CIC 可用加法器链，无 DSP 资源，补偿 FIR 使用系数对称减少乘法器。
+  \item \textbf{带通滤波}：若用 IIR，2 个 Biquad 共 10 个乘法器（可映射到 10 个 DSP 块）；若用 FIR（64 阶），只需 32 个乘法器并可时分复用 4--8 路乘法器以减资源。
+  \item \textbf{包络}：绝对值/平方 $\rightarrow$ IIR 低通（1 个乘法器）。为了抑制直流漂移，可在低通前做一个极低频高通（如 20 Hz）。
+  \item \textbf{Teager-Kaiser}：需要 3 个乘法器；使用移位寄存器延时 1/--1 样本，结果进入滑动均值（积分器+减法器实现）。
+  \item \textbf{窗口累积与阈值寄存器}：BRAM/分布式 RAM 存窗口；所有阈值、窗口长度、死区时间做可配置寄存器，便于现场调参。
+  \item \textbf{流水线与定点}：统一采用 Q1.15 或 Q2.14，保持乘法后做 1--2 bit Guard，末级按需要饱和/截断；滤波器各级加同步对齐信号，保证判决窗口对齐。
+\end{itemize}
+
+\begin{lstlisting}[language=C,caption={FPGA 侧冲击检测核心流程（伪代码）}]
+// 输入为抽取后的 PCM（48 kHz）
+for each sample x[n]:
+    bp = bandpass_9k(x[n])               // IIR or FIR
+    env = lp_env(abs(bp))                // 包络主特征
+    tkeo = bp^2 - x[n-1]*x[n+1]          // Teager 能量
+    tkeo_ma = movavg(tkeo)               // 窗口均值
+    kurt = kurtosis_window(bp)           // 可选：窗口峭度
+
+    if env > th_env && tkeo_ma > th_tkeo:
+        trigger = 1
+    else
+        trigger = 0
+
+    // 输出：触发状态 + 关键特征，供上位机/MCU 读取
+\end{lstlisting}
+
+\section{资源与优化建议}
+\begin{itemize}
+  \item \textbf{乘法器预算}（48 kHz 情况）：CIC 0，补偿 FIR 8--16，带通 IIR 10 或 FIR 8--16（若时分复用），包络 1，Teager 3，RMS/峭度 4--6，总计 $\lesssim$ 20 个 DSP 块即可满足。
+  \item \textbf{存储预算}：窗口长度 64--256 点时，BRAM 占用很小（几 KB 级）。可将配置寄存器与 FIFO 放在同一 BRAM 以简化布线。
+  \item \textbf{时钟域}：建议单时钟（如 48 MHz）驱动全部逻辑，音频采样 48 kHz 通过时钟使能节拍。PDM 时钟与主时钟分域，PDM 数据通过同步器跨域。
+  \item \textbf{功耗/低资源模式}：可只保留包络+Teager 判决，关闭峭度、峰峰值等，满足最小资源占用的 FPGA/MCU 协处理情景。
+\end{itemize}
+
+\section{软件侧验证计划}
+\subsection{离线算法与定点对齐}
+\begin{itemize}
+  \item 在 Python/Matlab 中构建浮点参考链路（PDM 解码 $\rightarrow$ 带通 $\rightarrow$ 包络/Teager/峭度），导出测试向量（CSV/NPY）。
+  \item 建立定点仿真（与 FPGA 相同 Q 格式、饱和/截断策略），计算误差指标（幅频偏差、包络峰值偏差、触发延迟）。
+  \item 对 9.1--9.5 kHz 窄带的滤波器在软件端扫频，验证 3 dB 带宽、群延迟，并与 FPGA 仿真波形对齐。
+\end{itemize}
+
+\subsection{仿真与联调}
+\begin{itemize}
+  \item \textbf{RTL 仿真}：用 Python 生成 PDM/PCM 向量，驱动 Verilog testbench，比较特征/触发标志，与定点模型比对。
+  \item \textbf{板级验证}：在 FPGA 上输出实时包络/特征到 UART/逻辑分析仪，使用已知冲击样本回放（软件播放或信号发生器）验证阈值。
+  \item \textbf{回归集}：包含低信噪、温度变化、不同佩戴/耦合压力的样本，至少覆盖 20+ 组冲击与若干负样本，统计 FAR/FRR。
+\end{itemize}
+
+\section{推进路线与交付物}
+\begin{itemize}
+  \item \textbf{阶段 1}（软件对齐）：完成滤波器设计、定点模型与测试向量；确定阈值范围。
+  \item \textbf{阶段 2}（RTL 验证）：完成 PDM/CIC/FIR、带通、包络、Teager、判决模块 RTL，仿真通过。
+  \item \textbf{阶段 3}（板级联调）：在 Tang Nano 9K 上跑通，实测延迟、资源、功耗，调整阈值与死区。
+  \item \textbf{阶段 4}（固化与发布）：锁定参数，输出 bitstream、寄存器说明、回归报告，为后续 FPGA/ASIC 迁移做准备。
+\end{itemize}
+
+\section{构建与使用}
+\begin{itemize}
+  \item 编译：进入 \texttt{doc/fpga-proposal} 目录，使用 \texttt{xelatex main.tex} 或 \texttt{latexmk -xelatex main.tex} 生成 PDF。
+  \item 字体：文档默认使用仓库根目录的 \texttt{SimHei.ttf}（通过 \texttt{Path=../../} 引用）；如需更换，可在导言区调整 \texttt{\textbackslash setCJKmainfont}。
+  \item 输出物：PDF 方案书（给算法/硬件/验证协作），后续可在同目录增补示意图、时序图与接口表格。
+\end{itemize}
+
+\end{document}
