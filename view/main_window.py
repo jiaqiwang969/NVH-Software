@@ -160,6 +160,7 @@ class MainWindow(tk.Tk):
         self.time_audio_duration = 0.0
         self.time_audio_update_job = None    # Tk after 任务句柄，用于更新播放指示线
         self.time_motion_cid = None  # mpl_connect 句柄，避免重复绑定导致卡顿
+        self.time_bg = None  # 用于 blitting 的背景缓存
         # 新增：用于控制是否将当前时间范围应用于频谱分析
         self.apply_truncation_to_spectrum_var = tk.BooleanVar(value=False)
         # 频响函数变量
@@ -1579,6 +1580,9 @@ class MainWindow(tk.Tk):
         self.time_motion_cid = self.canvas_time.mpl_connect('motion_notify_event', mouse_move)
         self.canvas_time.draw()
 
+        # 保存背景用于 blitting（快速更新红线）
+        self.time_bg = self.canvas_time.copy_from_bbox(self.figure_time.bbox)
+
     def play_time_segment_audio(self):
         """
         根据当前“时间显示范围(秒)”播放该时间段的时域信号。
@@ -1737,8 +1741,7 @@ class MainWindow(tk.Tk):
     def start_time_play_line_timer(self):
         """
         使用 Tk 的定时器，根据 wall-clock 时间更新时域图上的播放指示红线。
-        为了简单可靠，这里使用整图重绘（draw_idle），音频播放由后台线程完成，
-        不会被绘图阻塞。
+        使用 blitting 技术快速更新，避免重绘整个图形导致卡顿。
         """
         # 若有旧的定时任务，先取消
         if self.time_audio_update_job is not None:
@@ -1751,11 +1754,15 @@ class MainWindow(tk.Tk):
         def _update():
             # 播放已结束或被停止
             if not self.time_audio_is_playing:
-                # 播放结束，隐藏红线
+                # 播放结束，隐藏红线并恢复背景
                 if self.time_play_line is not None:
                     self.time_play_line.set_alpha(0.0)
                     try:
-                        self.canvas_time.draw_idle()
+                        if self.time_bg is not None:
+                            self.canvas_time.restore_region(self.time_bg)
+                            self.canvas_time.blit(self.figure_time.bbox)
+                        else:
+                            self.canvas_time.draw_idle()
                     except Exception:
                         pass
                 self.time_audio_update_job = None
@@ -1776,12 +1783,25 @@ class MainWindow(tk.Tk):
 
             # 在上方时域轴上绘制/更新红线
             if self.time_ax is not None and self.time_play_line is not None:
-                # 更新独立的播放红线位置和样式
-                self.time_play_line.set_xdata([cur_t, cur_t])
-                self.time_play_line.set_alpha(0.9)  # 显示红线
-
-                # 简单整图重绘（非阻塞），主线程自己调度
-                self.canvas_time.draw_idle()
+                try:
+                    # 使用 blitting 快速更新红线
+                    if self.time_bg is not None:
+                        # 恢复背景
+                        self.canvas_time.restore_region(self.time_bg)
+                        # 更新红线位置
+                        self.time_play_line.set_xdata([cur_t, cur_t])
+                        self.time_play_line.set_alpha(0.9)
+                        # 只重绘红线
+                        self.time_ax.draw_artist(self.time_play_line)
+                        # 更新画布
+                        self.canvas_time.blit(self.figure_time.bbox)
+                    else:
+                        # 回退到普通绘制
+                        self.time_play_line.set_xdata([cur_t, cur_t])
+                        self.time_play_line.set_alpha(0.9)
+                        self.canvas_time.draw_idle()
+                except Exception:
+                    pass
 
             # 若还在播放，则继续下一次更新
             if self.time_audio_is_playing:
